@@ -34,6 +34,11 @@ static void *xcalloc(size_t n) {
 	return p;
 }
 
+static int c_isspace_fwd(int c) {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' ||
+	       c == '\r';
+}
+
 /* ---------------------------------------------------------------- buffers */
 
 typedef struct {
@@ -64,6 +69,17 @@ static void bput(Buf *b, const char *s, size_t n) {
 static void bputc(Buf *b, char c) { bput(b, &c, 1); }
 static void bputs(Buf *b, const char *s) { bput(b, s, strlen(s)); }
 
+static void btrim(Buf *b) {
+	size_t i = 0;
+	while (i < b->n && c_isspace_fwd((unsigned char)b->p[i])) i++;
+	if (i) {
+		memmove(b->p, b->p + i, b->n - i);
+		b->n -= i;
+	}
+	while (b->n > 0 && c_isspace_fwd((unsigned char)b->p[b->n - 1])) b->n--;
+	if (b->p) b->p[b->n] = 0;
+}
+
 static void bfree(Buf *b) {
 	free(b->p);
 	b->p = NULL;
@@ -74,10 +90,7 @@ static void bfree(Buf *b) {
 
 static int is_space_or_tab(int c) { return c == ' ' || c == '\t'; }
 static int is_line_end(int c) { return c == '\n' || c == '\r'; }
-static int c_isspace(int c) {
-	return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' ||
-	       c == '\r';
-}
+#define c_isspace c_isspace_fwd
 
 /* ------------------------------------------------------------------- nodes */
 
@@ -302,6 +315,32 @@ static size_t scan_atx_start(Parser *p, size_t i) {
 	return i - start;
 }
 
+/* `[`]{3,}` or `[~]{3,}`.  Returns the fence length, or 0.  A backtick fence
+ * may not have a backtick anywhere in its info string; a tilde fence may. */
+static int scan_open_fence(Parser *p, size_t i) {
+	char c = p->line[i];
+	int count = 0;
+	size_t j;
+	if (c != '`' && c != '~') return 0;
+	while (i < p->len && p->line[i] == c) { count++; i++; }
+	if (count < 3) return 0;
+	if (c == '`')
+		for (j = i; j < p->len && !is_line_end(p->line[j]); j++)
+			if (p->line[j] == '`') return 0;
+	return count;
+}
+
+/* `(fence_char){3,} [ \t]* [\r\n]`.  Returns the fence length, or 0.  The
+ * caller compares it with the opening length. */
+static int scan_close_fence(Parser *p, size_t i, char c) {
+	int count = 0;
+	while (i < p->len && p->line[i] == c) { count++; i++; }
+	if (count < 3) return 0;
+	while (i < p->len && is_space_or_tab(p->line[i])) i++;
+	if (i >= p->len || !is_line_end(p->line[i])) return 0;
+	return count;
+}
+
 /* `[=]+ [ \t]* [\r\n]` is an h1 underline, `[-]+ ...` an h2.  Returns the
  * level, or 0.  A single `-` is both a valid h2 underline and a valid list
  * marker, which is why the caller's branch order matters. */
@@ -329,6 +368,28 @@ static void chop_hashes(Parser *p) {
 		while (p->len > p->off && c_isspace((unsigned char)p->line[p->len - 1]))
 			p->len--;
 	}
+}
+
+/* A backslash before an ASCII punctuation character is an escape.  Used on
+ * code fence info strings, link destinations and link titles, where the
+ * escapes are resolved during parsing rather than during inline rendering.
+ * shortcut: entity references in those three places are resolved by the same
+ * helper once the entity table exists. */
+static int ascii_punct(int c) {
+	return (c >= '!' && c <= '/') || (c >= ':' && c <= '@') ||
+	       (c >= '[' && c <= '`') || (c >= '{' && c <= '~');
+}
+
+static void unescape_backslashes(Buf *b) {
+	size_t r, w = 0;
+	for (r = 0; r < b->n; r++) {
+		if (b->p[r] == '\\' && r + 1 < b->n &&
+		    ascii_punct((unsigned char)b->p[r + 1]))
+			r++;
+		b->p[w++] = b->p[r];
+	}
+	b->n = w;
+	if (b->p) b->p[b->n] = 0;
 }
 
 /* ------------------------------------------------------- inline parsing */
@@ -375,6 +436,18 @@ static Node *finalize(Parser *p, Node *b) {
 		if (!b->fenced) {
 			remove_trailing_blank_lines(&b->content);
 			bputc(&b->content, '\n');
+		} else {
+			/* The first line of the content is the info string. */
+			size_t i = 0;
+			while (i < b->content.n && !is_line_end(b->content.p[i])) i++;
+			bput(&b->info, b->content.p, i);
+			btrim(&b->info);
+			unescape_backslashes(&b->info);
+			if (i < b->content.n && b->content.p[i] == '\r') i++;
+			if (i < b->content.n && b->content.p[i] == '\n') i++;
+			memmove(b->content.p, b->content.p + i, b->content.n - i);
+			b->content.n -= i;
+			b->content.p[b->content.n] = 0;
 		}
 		break;
 	case N_PARA:
@@ -419,6 +492,21 @@ static Node *check_open_blocks(Parser *p, int *all_matched) {
 				if (p->indent >= CODE_INDENT) advance(p, CODE_INDENT, 1);
 				else if (p->blank) advance(p, p->fns - p->off, 0);
 				else return cont->parent;
+			} else {
+				int m = 0, k;
+				if (p->indent <= 3 &&
+				    p->fns < p->len && p->line[p->fns] == cont->fence_char)
+					m = scan_close_fence(p, p->fns, cont->fence_char);
+				if (m >= cont->fence_len) {
+					/* The closing fence consumes the whole line. */
+					advance(p, (size_t)m, 0);
+					p->cur = finalize(p, cont);
+					return NULL;
+				}
+				for (k = cont->fence_off;
+				     k > 0 && p->off < p->len &&
+				     is_space_or_tab(p->line[p->off]); k--)
+					advance(p, 1, 1);
 			}
 			break;
 		case N_PARA:
@@ -452,6 +540,16 @@ static void open_new_blocks(Parser *p, Node **cont, int all_matched) {
 			*cont = add_child(p, *cont, N_HEADING);
 			while (h < p->len && p->line[h] == '#') { level++; h++; }
 			(*cont)->level = level;
+		} else if (!indented && (matched = (size_t)scan_open_fence(p, p->fns))
+		           != 0) {
+			char fc = p->line[p->fns];
+			int off = (int)(p->fns - p->off);
+			advance(p, p->fns + matched - p->off, 0);
+			*cont = add_child(p, *cont, N_CODE);
+			(*cont)->fenced = 1;
+			(*cont)->fence_char = fc;
+			(*cont)->fence_len = (int)matched;
+			(*cont)->fence_off = off;
 		} else if (!indented && (*cont)->t == N_PARA && all_matched &&
 		           (lev = scan_setext(p, p->fns)) != 0) {
 			(*cont)->t = N_HEADING;

@@ -87,7 +87,7 @@ Ranked by how little we control them.
 - [x] indented code blocks
   - why: needs the column-accurate tab handling in `advance`, which nothing
     before this exercises.
-- [ ] fenced code blocks
+- [x] fenced code blocks
   - why: the first block with a close condition of its own and an info string
     that needs entity and backslash unescaping.
 - [ ] block quotes
