@@ -89,6 +89,23 @@ static void bfree(Buf *b) {
 /* ------------------------------------------------------- character classes */
 
 static int is_space_or_tab(int c) { return c == ' ' || c == '\t'; }
+static int c_isalpha(int c) {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+static int c_isalnum(int c) {
+	return c_isalpha(c) || (c >= '0' && c <= '9');
+}
+static int c_lower(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
+
+/* ASCII case-insensitive compare of a fixed length.  strncasecmp is POSIX,
+ * not C11, and this file compiles with -std=c11 and no feature macros. */
+static int ci_eq(const char *a, const char *b, size_t n) {
+	size_t i;
+	for (i = 0; i < n; i++)
+		if (c_lower((unsigned char)a[i]) != c_lower((unsigned char)b[i]))
+			return 0;
+	return 1;
+}
 static int is_line_end(int c) { return c == '\n' || c == '\r'; }
 #define c_isspace c_isspace_fwd
 
@@ -284,6 +301,192 @@ static Node *add_child(Parser *p, Node *parent, Type t) {
 	child->start_line = p->lineno;
 	node_append(parent, child);
 	return child;
+}
+
+
+/* ------------------------------------------------- HTML tag grammar (spec) */
+
+/* Spaces and tabs, plus at most one line ending.  Attributes may be split
+ * across one newline, which is why the inline raw-HTML scanner can see a tag
+ * spanning two source lines. */
+static size_t skip_sp_nl(const char *s, size_t n, size_t i) {
+	int nl = 0;
+	while (i < n) {
+		if (s[i] == ' ' || s[i] == '\t') i++;
+		else if (!nl && s[i] == '\n') { nl = 1; i++; }
+		else if (!nl && s[i] == '\r') {
+			nl = 1; i++;
+			if (i < n && s[i] == '\n') i++;
+		} else break;
+	}
+	return i;
+}
+
+static int attr_name_char(int c) {
+	return c_isalnum(c) || c == '_' || c == '.' || c == ':' || c == '-';
+}
+
+/* One attribute: required whitespace, a name, and an optional value which may
+ * be unquoted, single-quoted or double-quoted.  Returns the offset just past
+ * it, or 0. */
+static size_t scan_attribute(const char *s, size_t n, size_t i) {
+	size_t j = skip_sp_nl(s, n, i), k, m;
+	if (j == i || j >= n) return 0;
+	if (!(c_isalpha((unsigned char)s[j]) || s[j] == '_' || s[j] == ':'))
+		return 0;
+	for (k = j + 1; k < n && attr_name_char((unsigned char)s[k]); k++)
+		;
+	m = skip_sp_nl(s, n, k);
+	if (m >= n || s[m] != '=') return k;
+	m = skip_sp_nl(s, n, m + 1);
+	if (m >= n) return 0;
+	if (s[m] == '\'' || s[m] == '"') {
+		char q = s[m];
+		for (k = m + 1; k < n && s[k] != q; k++)
+			;
+		if (k >= n) return 0;
+		return k + 1;
+	}
+	for (k = m; k < n; k++) {
+		char c = s[k];
+		if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '"' ||
+		    c == '\'' || c == '=' || c == '<' || c == '>' || c == '`')
+			break;
+	}
+	return k == m ? 0 : k;
+}
+
+/* `<` tagname attributes* `/`? `>`.  Reports the tag name so callers can
+ * exclude pre/script/style/textarea.  Returns the length, or 0. */
+static size_t scan_open_tag(const char *s, size_t n, size_t i, size_t *nstart,
+                            size_t *nlen) {
+	size_t j = i + 1, ns;
+	if (i >= n || s[i] != '<') return 0;
+	if (j >= n || !c_isalpha((unsigned char)s[j])) return 0;
+	for (ns = j; j < n && (c_isalnum((unsigned char)s[j]) || s[j] == '-'); j++)
+		;
+	if (nstart) *nstart = ns;
+	if (nlen) *nlen = j - ns;
+	for (;;) {
+		size_t k = scan_attribute(s, n, j);
+		if (!k) break;
+		j = k;
+	}
+	j = skip_sp_nl(s, n, j);
+	if (j < n && s[j] == '/') j++;
+	if (j < n && s[j] == '>') return j + 1 - i;
+	return 0;
+}
+
+static size_t scan_closing_tag(const char *s, size_t n, size_t i) {
+	size_t j = i + 2;
+	if (i + 1 >= n || s[i] != '<' || s[i + 1] != '/') return 0;
+	if (j >= n || !c_isalpha((unsigned char)s[j])) return 0;
+	while (j < n && (c_isalnum((unsigned char)s[j]) || s[j] == '-')) j++;
+	j = skip_sp_nl(s, n, j);
+	if (j < n && s[j] == '>') return j + 1 - i;
+	return 0;
+}
+
+/* The seven HTML block kinds, by start condition.  Types 1-5 end on a line
+ * containing a specific string; types 6 and 7 end on a blank line. */
+static const char *const HTML6[] = {
+    "address", "article", "aside", "base", "basefont", "blockquote", "body",
+    "caption", "center", "col", "colgroup", "dd", "details", "dialog", "dir",
+    "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "form",
+    "frame", "frameset", "h1", "h2", "h3", "h4", "h5", "h6", "head", "header",
+    "hr", "html", "iframe", "legend", "li", "link", "main", "menu",
+    "menuitem", "nav", "noframes", "ol", "optgroup", "option", "p", "param",
+    "search", "section", "summary", "table", "tbody", "td", "tfoot", "th",
+    "thead", "title", "tr", "track", "ul", NULL};
+
+static const char *const HTML1[] = {"pre", "script", "style", "textarea",
+                                    NULL};
+
+static int html_type1_name(const char *s, size_t n, size_t i) {
+	int k;
+	for (k = 0; HTML1[k]; k++) {
+		size_t L = strlen(HTML1[k]);
+		if (i + L <= n && ci_eq(s + i, HTML1[k], L)) return 1;
+	}
+	return 0;
+}
+
+static int scan_html_block_start(const char *s, size_t n, size_t i) {
+	size_t j;
+	int k;
+	if (i >= n || s[i] != '<') return 0;
+	if (i + 4 <= n && memcmp(s + i, "<!--", 4) == 0) return 2;
+	if (i + 2 <= n && s[i + 1] == '?') return 3;
+	if (i + 9 <= n && memcmp(s + i, "<![CDATA[", 9) == 0) return 5;
+	if (i + 3 <= n && s[i + 1] == '!' && c_isalpha((unsigned char)s[i + 2]))
+		return 4;
+	for (k = 0; HTML1[k]; k++) {
+		size_t L = strlen(HTML1[k]);
+		j = i + 1;
+		if (j + L > n || !ci_eq(s + j, HTML1[k], L)) continue;
+		j += L;
+		if (j >= n || s[j] == ' ' || s[j] == '\t' || s[j] == '>' ||
+		    is_line_end(s[j]))
+			return 1;
+	}
+	j = i + 1;
+	if (j < n && s[j] == '/') j++;
+	for (k = 0; HTML6[k]; k++) {
+		size_t L = strlen(HTML6[k]), e;
+		if (j + L > n || !ci_eq(s + j, HTML6[k], L)) continue;
+		e = j + L;
+		if (e >= n || s[e] == ' ' || s[e] == '\t' || s[e] == '>' ||
+		    is_line_end(s[e]) ||
+		    (s[e] == '/' && e + 1 < n && s[e + 1] == '>'))
+			return 6;
+	}
+	return 0;
+}
+
+/* Type 7: a complete open or closing tag, any name but the type 1 four,
+ * alone on the line but for trailing spaces and tabs. */
+static int scan_html_block_start_7(const char *s, size_t n, size_t i) {
+	size_t ns = 0, nl = 0, m = scan_open_tag(s, n, i, &ns, &nl);
+	if (m) {
+		if (nl && html_type1_name(s, n, ns) &&
+		    (nl == 3 || nl == 5 || nl == 6 || nl == 8))
+			return 0;
+	} else {
+		m = scan_closing_tag(s, n, i);
+		if (!m) return 0;
+	}
+	i += m;
+	while (i < n && is_space_or_tab(s[i])) i++;
+	return (i >= n || is_line_end(s[i])) ? 7 : 0;
+}
+
+static int contains(const char *s, size_t n, size_t i, const char *pat) {
+	size_t L = strlen(pat);
+	for (; i + L <= n; i++)
+		if (memcmp(s + i, pat, L) == 0) return 1;
+	return 0;
+}
+
+static int html_block_end(int type, const char *s, size_t n, size_t i) {
+	int k;
+	switch (type) {
+	case 1:
+		for (k = 0; HTML1[k]; k++) {
+			char pat[16];
+			size_t L, j;
+			snprintf(pat, sizeof pat, "</%s>", HTML1[k]);
+			L = strlen(pat);
+			for (j = i; j + L <= n; j++)
+				if (ci_eq(s + j, pat, L)) return 1;
+		}
+		return 0;
+	case 2: return contains(s, n, i, "-->");
+	case 3: return contains(s, n, i, "?>");
+	case 4: return contains(s, n, i, ">");
+	case 5: return contains(s, n, i, "]]>");
+	default: return 0;
+	}
 }
 
 /* ---------------------------------------------------------------- scanners */
@@ -598,6 +801,10 @@ static Node *check_open_blocks(Parser *p, int *all_matched) {
 				return cont->parent;
 			}
 			break;
+		case N_HTML_BLOCK:
+			/* Types 1-5 swallow blank lines; 6 and 7 end at one. */
+			if (cont->html_type >= 6 && p->blank) return cont->parent;
+			break;
 		case N_ITEM:
 			if (p->indent >= cont->marker_off + cont->padding)
 				advance(p, (size_t)(cont->marker_off + cont->padding), 1);
@@ -675,6 +882,14 @@ static void open_new_blocks(Parser *p, Node **cont, int all_matched) {
 			(*cont)->fence_char = fc;
 			(*cont)->fence_len = (int)matched;
 			(*cont)->fence_off = off;
+		} else if (!indented &&
+		           ((lev = scan_html_block_start(p->line, p->len, p->fns)) ||
+		            ((*cont)->t != N_PARA &&
+		             (lev = scan_html_block_start_7(p->line, p->len,
+		                                            p->fns))))) {
+			*cont = add_child(p, *cont, N_HTML_BLOCK);
+			(*cont)->html_type = lev;
+			/* The offset is deliberately not advanced: the tag is content. */
 		} else if (!indented && (*cont)->t == N_PARA && all_matched &&
 		           (lev = scan_setext(p, p->fns)) != 0) {
 			(*cont)->t = N_HEADING;
@@ -751,8 +966,12 @@ static void add_text_to_container(Parser *p, Node *cont, Node *last_matched) {
 	}
 	while (p->cur != last_matched) p->cur = finalize(p, p->cur);
 
-	if (cont->t == N_CODE || cont->t == N_HTML_BLOCK) {
+	if (cont->t == N_CODE) {
 		add_line(p, cont);
+	} else if (cont->t == N_HTML_BLOCK) {
+		add_line(p, cont);
+		if (html_block_end(cont->html_type, p->line, p->len, p->fns))
+			p->cur = cont = finalize(p, cont);
 	} else if (p->blank) {
 		/* nothing to add */
 	} else if (accepts_lines(cont->t)) {
@@ -845,6 +1064,11 @@ static void render(Buf *out, Node *n, int depth) {
 		bputs(out, tag);
 		break;
 	}
+	case N_HTML_BLOCK:
+		cr(out);
+		bput(out, n->content.p, n->content.n);
+		cr(out);
+		break;
 	case N_LIST:
 		cr(out);
 		if (!n->ordered) bputs(out, "<ul>\n");

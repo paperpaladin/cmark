@@ -97,7 +97,7 @@ Ranked by how little we control them.
   - why: the hardest container.  Item continuation, padding, `lists_match`,
     and tight versus loose, which is a property of the whole list decided at
     finalize time.
-- [ ] HTML blocks, all seven start and end conditions
+- [x] HTML blocks, all seven start and end conditions
   - why: 44 examples, and type 7's "cannot interrupt a paragraph" rule is the
     only reason `open_new_blocks` needs to know the container type.
 - [ ] link reference definitions
