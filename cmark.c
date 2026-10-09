@@ -1004,20 +1004,106 @@ static size_t parse_reference(RefMap *refs, const char *s, size_t n) {
 
 /* ------------------------------------------------------- inline parsing */
 
-static void rtrim_buf(Buf *b) {
-	while (b->n > 0 && c_isspace((unsigned char)b->p[b->n - 1])) b->n--;
-	if (b->p) b->p[b->n] = 0;
+/* The subject of inline parsing: one block's accumulated text, a cursor, and
+ * the stacks that emphasis and links need. */
+typedef struct {
+	const char *s;
+	size_t n, pos;
+	RefMap *refs;
+} Subject;
+
+/* The characters that can start something other than plain text.  Everything
+ * else is swallowed in runs by handle_text. */
+static int is_special(int c) {
+	switch (c) {
+	case '\n': case '\r': case '\\':
+		return 1;
+	default:
+		return 0;
+	}
 }
 
-/* shortcut: placeholder inline pass -- one text node, no emphasis, no links.
- * Replaced by the real inline lexer; see PLAN.md. */
-static void parse_inlines(Node *parent) {
-	Node *t;
-	rtrim_buf(&parent->content);
-	if (parent->content.n == 0) return;
-	t = node_new(N_TEXT);
-	bput(&t->content, parent->content.p, parent->content.n);
-	node_append(parent, t);
+static Node *make_literal(Type t, const char *s, size_t n) {
+	Node *node = node_new(t);
+	bput(&node->content, s, n);
+	return node;
+}
+
+static Node *handle_text(Subject *s) {
+	size_t start = s->pos, end;
+	while (s->pos < s->n && !is_special((unsigned char)s->s[s->pos])) s->pos++;
+	end = s->pos;
+	/* Trailing spaces before a line ending belong to the break, not to the
+	 * text: they are what makes it a hard break. */
+	if (s->pos < s->n && is_line_end(s->s[s->pos]))
+		while (end > start && c_isspace((unsigned char)s->s[end - 1])) end--;
+	return make_literal(N_TEXT, s->s + start, end - start);
+}
+
+static void skip_line_end(Subject *s) {
+	if (s->pos < s->n && s->s[s->pos] == '\r') s->pos++;
+	if (s->pos < s->n && s->s[s->pos] == '\n') s->pos++;
+}
+
+/* Two or more spaces then a line ending is a hard break; one or none is a
+ * soft break. */
+static Node *handle_newline(Subject *s) {
+	size_t nlpos = s->pos;
+	skip_line_end(s);
+	while (s->pos < s->n && is_space_or_tab(s->s[s->pos])) s->pos++;
+	if (nlpos > 1 && s->s[nlpos - 1] == ' ' && s->s[nlpos - 2] == ' ')
+		return node_new(N_LINEBREAK);
+	return node_new(N_SOFTBREAK);
+}
+
+/* A backslash escapes any ASCII punctuation character, is a hard break before
+ * a line ending, and is a literal backslash anywhere else. */
+static Node *handle_backslash(Subject *s) {
+	s->pos++;
+	if (s->pos < s->n && ascii_punct((unsigned char)s->s[s->pos])) {
+		s->pos++;
+		return make_literal(N_TEXT, s->s + s->pos - 1, 1);
+	}
+	if (s->pos < s->n && is_line_end(s->s[s->pos])) {
+		skip_line_end(s);
+		while (s->pos < s->n && is_space_or_tab(s->s[s->pos])) s->pos++;
+		return node_new(N_LINEBREAK);
+	}
+	return make_literal(N_TEXT, "\\", 1);
+}
+
+/* shortcut: code spans, entities, emphasis, links, images, autolinks and raw
+ * HTML are added to this switch commit by commit.  See PLAN.md. */
+static int parse_inline(Subject *s, Node *parent) {
+	Node *n = NULL;
+	int c;
+	if (s->pos >= s->n) return 0;
+	c = (unsigned char)s->s[s->pos];
+	switch (c) {
+	case '\r':
+	case '\n':
+		n = handle_newline(s);
+		break;
+	case '\\':
+		n = handle_backslash(s);
+		break;
+	default:
+		n = handle_text(s);
+		break;
+	}
+	if (n) node_append(parent, n);
+	return 1;
+}
+
+static void parse_inlines(Node *parent, RefMap *refs) {
+	Subject s;
+	memset(&s, 0, sizeof s);
+	s.s = parent->content.p;
+	s.n = parent->content.n;
+	s.refs = refs;
+	while (s.n > 0 && c_isspace((unsigned char)s.s[s.n - 1])) s.n--;
+	while (parse_inline(&s, parent))
+		;
 }
 
 /* --------------------------------------------------------------- finalize */
@@ -1131,10 +1217,10 @@ static void finalize_document(Parser *p) {
 
 /* Inline content is parsed after the whole block structure is known, because
  * a link reference definition may be defined after its first use. */
-static void process_inlines(Node *n) {
+static void process_inlines(Node *n, RefMap *refs) {
 	Node *c;
-	if (n->t == N_PARA || n->t == N_HEADING) parse_inlines(n);
-	for (c = n->first; c; c = c->next) process_inlines(c);
+	if (n->t == N_PARA || n->t == N_HEADING) parse_inlines(n, refs);
+	for (c = n->first; c; c = c->next) process_inlines(c, refs);
 }
 
 /* ------------------------------------------------------- block structure */
@@ -1473,6 +1559,12 @@ static void render(Buf *out, Node *n, int depth) {
 	case N_TEXT:
 		escape_html(out, n->content.p, n->content.n);
 		break;
+	case N_SOFTBREAK:
+		bputc(out, '\n');
+		break;
+	case N_LINEBREAK:
+		bputs(out, "<br />\n");
+		break;
 	default:
 		render_children(out, n, depth);
 		break;
@@ -1523,7 +1615,7 @@ static int run(const char *src, size_t srclen, Buf *out) {
 	if (p.too_deep) rc = 1;
 	else {
 		finalize_document(&p);
-		process_inlines(p.doc);
+		process_inlines(p.doc, &p.refs);
 		render(out, p.doc, 0);
 	}
 	node_free(p.doc);

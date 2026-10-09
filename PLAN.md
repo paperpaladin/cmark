@@ -103,7 +103,7 @@ Ranked by how little we control them.
 - [x] link reference definitions
   - why: block-level because they are stripped from paragraph starts at
     finalize, but their payload is inline syntax, so this is the seam.
-- [ ] inline framework: text runs, soft and hard breaks, backslash escapes
+- [x] inline framework: text runs, soft and hard breaks, backslash escapes
   - why: replaces the placeholder inline pass.  Hard breaks first because they
     are the only inline that depends on trailing whitespace, which the
     paragraph accumulator must not have eaten.
