@@ -62,21 +62,39 @@ Ranked by how little we control them.
 
 ## Non-goals
 
-- 652/652.  That is a multi-year target and claiming it would be a lie.  The
-  aim is the block-level and basic-inline sections clean and an accurate
-  report of the rest.
-- Any Markdown dialect other than CommonMark 0.31.2.
-- Full Unicode case folding for link labels, or the full Unicode punctuation
-  and whitespace tables for emphasis flanking.  Both are approximated to the
-  ranges the suite exercises, marked `shortcut:` in the source and stated in
-  the README.
-- Performance.  The parser is O(n) per line in the normal case and makes no
-  attempt to bound the pathological ones beyond the depth limit.
+- Any Markdown dialect other than CommonMark 0.31.2.  No tables, no
+  strikethrough, no task lists, no footnotes, no autolink literals, no smart
+  punctuation, no attributes.
+- A library API.  There is no header, no `cmark_parse`/`cmark_render` pair
+  exposed to callers, no AST walker, no source position tracking.  One
+  function, `run()`, takes bytes and returns HTML.
+- A safe mode.  Raw HTML in the input is passed through, which is what the
+  spec's expected output requires and what `cmark --unsafe` does.  A
+  `--safe` mode that replaced it with a comment would be a second renderer.
+- Performance beyond "the suite runs in under a second".  The parser is O(n)
+  per line in the normal case; two places are knowingly worse and carry
+  `shortcut:` comments (backtick scanning, reference lookup).
+- **Claiming that 652/652 means "correct".**  It means every example in the
+  spec is reproduced byte for byte.  The suite is not exhaustive, and the
+  README lists what is known to be outside it.
 
-## The entity table
+Two things that *were* non-goals and stopped being so, because the suite
+would not allow the shortcut: full Unicode case folding for link labels (the
+spec matches `[SS]` against `[U+1E9E]`, which needs the multi-character
+foldings) and the real Unicode punctuation categories for emphasis flanking
+(0.31 includes the symbol categories, so an ASCII approximation fails in both
+directions).  Both are now generated tables rather than hand-written
+approximations.
 
-The 2125 HTML5 named character references in `cmark.c` are generated data, not
-hand-written, and the one-liner that produced them is:
+## The generated tables
+
+Three tables in `cmark.c` are generated data, not hand-written.  None of them
+has an algorithm hiding in it, and all three are reproducible from CPython's
+standard library, which is where the authority lives rather than in this
+repo.
+
+**The 2125 HTML5 named character references.**  The one-liner that produced
+them:
 
 ```sh
 python3 -c 'import html.entities
@@ -89,6 +107,25 @@ CPython ships the WHATWG table, which is the one the CommonMark spec points
 at.  Keys without a trailing semicolon are dropped: CommonMark requires the
 semicolon, so `&amp` without one is literal text.  The values are written as
 octal escapes so the source file stays ASCII.
+
+**The 339 Unicode punctuation ranges**, for emphasis flanking:
+
+```sh
+python3 -c 'import unicodedata
+cats = {"Pc","Pd","Pe","Pf","Pi","Po","Ps","Sc","Sk","Sm","So"}
+print([c for c in range(0x110000) if unicodedata.category(chr(c)) in cats])'
+```
+
+**The 681 case-folding runs and 104 multi-character foldings**, for link
+label matching:
+
+```sh
+python3 -c 'print([(c, chr(c).casefold()) for c in range(0x110000)
+                   if chr(c).casefold() != chr(c)])'
+```
+
+Both are Unicode 15.1.0 as shipped with this CPython; the spec is written
+against 15.0 and the difference touches no example in the suite.
 
 ## Commit sequence
 
@@ -136,9 +173,10 @@ octal escapes so the source file stays ASCII.
 - [x] emphasis
   - why: last, because the delimiter stack has to be able to see link
     boundaries.  Left- and right-flanking plus the rule of 3.
-- [ ] tabs
-  - why: a cross-cutting section rather than a feature; it only becomes
-    testable once every block type exists to be indented by a tab.
+- [x] the last four failures: ATX closing sequences, info string entities,
+  setext after reference definitions, full Unicode case folding
+  - why: 648 -> 652.  Each one was a single condition in the wrong place, and
+    all four were found by reading the failure dump rather than the spec.
 - [ ] the depth limit and `make test-asan`
   - why: the limit is cheap but the test for it is the point, and it can only
     be written once containers and inline brackets both recurse.
