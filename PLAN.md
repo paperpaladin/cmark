@@ -133,7 +133,7 @@ octal escapes so the source file stays ASCII.
   - why: both start at `<`; one dispatch point, two grammars.
 - [x] links and images
   - why: needs the bracket stack and the reference map from two commits back.
-- [ ] emphasis
+- [x] emphasis
   - why: last, because the delimiter stack has to be able to see link
     boundaries.  Left- and right-flanking plus the rule of 3.
 - [ ] tabs

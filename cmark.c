@@ -1047,6 +1047,127 @@ static size_t decode_entity(Buf *out, const char *s, size_t n, size_t i) {
 	return j + 1 - i;
 }
 
+/* Unicode punctuation, as CommonMark 0.31 defines it: general categories Pc,
+ * Pd, Pe, Pf, Pi, Po, Ps, Sc, Sk, Sm and So.  (0.31 widened this to include
+ * the symbol categories, so a parser written against 0.30 gets `$` and `+`
+ * wrong here.)  339 ranges, generated from CPython's unicodedata, Unicode
+ * 15.1.0 -- the spec is written against 15.0 and the difference does not
+ * touch any example in the suite.  Binary search. */
+static const int32_t UNI_PUNCT[][2] = {
+    {0x21,0x2F}, {0x3A,0x40}, {0x5B,0x60}, {0x7B,0x7E}, {0xA1,0xA9},
+    {0xAB,0xAC}, {0xAE,0xB1}, {0xB4,0xB4}, {0xB6,0xB8}, {0xBB,0xBB},
+    {0xBF,0xBF}, {0xD7,0xD7}, {0xF7,0xF7}, {0x2C2,0x2C5}, {0x2D2,0x2DF},
+    {0x2E5,0x2EB}, {0x2ED,0x2ED}, {0x2EF,0x2FF}, {0x375,0x375}, {0x37E,0x37E},
+    {0x384,0x385}, {0x387,0x387}, {0x3F6,0x3F6}, {0x482,0x482}, {0x55A,0x55F},
+    {0x589,0x58A}, {0x58D,0x58F}, {0x5BE,0x5BE}, {0x5C0,0x5C0}, {0x5C3,0x5C3},
+    {0x5C6,0x5C6}, {0x5F3,0x5F4}, {0x606,0x60F}, {0x61B,0x61B}, {0x61D,0x61F},
+    {0x66A,0x66D}, {0x6D4,0x6D4}, {0x6DE,0x6DE}, {0x6E9,0x6E9}, {0x6FD,0x6FE},
+    {0x700,0x70D}, {0x7F6,0x7F9}, {0x7FE,0x7FF}, {0x830,0x83E}, {0x85E,0x85E},
+    {0x888,0x888}, {0x964,0x965}, {0x970,0x970}, {0x9F2,0x9F3}, {0x9FA,0x9FB},
+    {0x9FD,0x9FD}, {0xA76,0xA76}, {0xAF0,0xAF1}, {0xB70,0xB70}, {0xBF3,0xBFA},
+    {0xC77,0xC77}, {0xC7F,0xC7F}, {0xC84,0xC84}, {0xD4F,0xD4F}, {0xD79,0xD79},
+    {0xDF4,0xDF4}, {0xE3F,0xE3F}, {0xE4F,0xE4F}, {0xE5A,0xE5B}, {0xF01,0xF17},
+    {0xF1A,0xF1F}, {0xF34,0xF34}, {0xF36,0xF36}, {0xF38,0xF38}, {0xF3A,0xF3D},
+    {0xF85,0xF85}, {0xFBE,0xFC5}, {0xFC7,0xFCC}, {0xFCE,0xFDA},
+    {0x104A,0x104F}, {0x109E,0x109F}, {0x10FB,0x10FB}, {0x1360,0x1368},
+    {0x1390,0x1399}, {0x1400,0x1400}, {0x166D,0x166E}, {0x169B,0x169C},
+    {0x16EB,0x16ED}, {0x1735,0x1736}, {0x17D4,0x17D6}, {0x17D8,0x17DB},
+    {0x1800,0x180A}, {0x1940,0x1940}, {0x1944,0x1945}, {0x19DE,0x19FF},
+    {0x1A1E,0x1A1F}, {0x1AA0,0x1AA6}, {0x1AA8,0x1AAD}, {0x1B5A,0x1B6A},
+    {0x1B74,0x1B7E}, {0x1BFC,0x1BFF}, {0x1C3B,0x1C3F}, {0x1C7E,0x1C7F},
+    {0x1CC0,0x1CC7}, {0x1CD3,0x1CD3}, {0x1FBD,0x1FBD}, {0x1FBF,0x1FC1},
+    {0x1FCD,0x1FCF}, {0x1FDD,0x1FDF}, {0x1FED,0x1FEF}, {0x1FFD,0x1FFE},
+    {0x2010,0x2027}, {0x2030,0x205E}, {0x207A,0x207E}, {0x208A,0x208E},
+    {0x20A0,0x20C0}, {0x2100,0x2101}, {0x2103,0x2106}, {0x2108,0x2109},
+    {0x2114,0x2114}, {0x2116,0x2118}, {0x211E,0x2123}, {0x2125,0x2125},
+    {0x2127,0x2127}, {0x2129,0x2129}, {0x212E,0x212E}, {0x213A,0x213B},
+    {0x2140,0x2144}, {0x214A,0x214D}, {0x214F,0x214F}, {0x218A,0x218B},
+    {0x2190,0x2426}, {0x2440,0x244A}, {0x249C,0x24E9}, {0x2500,0x2775},
+    {0x2794,0x2B73}, {0x2B76,0x2B95}, {0x2B97,0x2BFF}, {0x2CE5,0x2CEA},
+    {0x2CF9,0x2CFC}, {0x2CFE,0x2CFF}, {0x2D70,0x2D70}, {0x2E00,0x2E2E},
+    {0x2E30,0x2E5D}, {0x2E80,0x2E99}, {0x2E9B,0x2EF3}, {0x2F00,0x2FD5},
+    {0x2FF0,0x2FFF}, {0x3001,0x3004}, {0x3008,0x3020}, {0x3030,0x3030},
+    {0x3036,0x3037}, {0x303D,0x303F}, {0x309B,0x309C}, {0x30A0,0x30A0},
+    {0x30FB,0x30FB}, {0x3190,0x3191}, {0x3196,0x319F}, {0x31C0,0x31E3},
+    {0x31EF,0x31EF}, {0x3200,0x321E}, {0x322A,0x3247}, {0x3250,0x3250},
+    {0x3260,0x327F}, {0x328A,0x32B0}, {0x32C0,0x33FF}, {0x4DC0,0x4DFF},
+    {0xA490,0xA4C6}, {0xA4FE,0xA4FF}, {0xA60D,0xA60F}, {0xA673,0xA673},
+    {0xA67E,0xA67E}, {0xA6F2,0xA6F7}, {0xA700,0xA716}, {0xA720,0xA721},
+    {0xA789,0xA78A}, {0xA828,0xA82B}, {0xA836,0xA839}, {0xA874,0xA877},
+    {0xA8CE,0xA8CF}, {0xA8F8,0xA8FA}, {0xA8FC,0xA8FC}, {0xA92E,0xA92F},
+    {0xA95F,0xA95F}, {0xA9C1,0xA9CD}, {0xA9DE,0xA9DF}, {0xAA5C,0xAA5F},
+    {0xAA77,0xAA79}, {0xAADE,0xAADF}, {0xAAF0,0xAAF1}, {0xAB5B,0xAB5B},
+    {0xAB6A,0xAB6B}, {0xABEB,0xABEB}, {0xFB29,0xFB29}, {0xFBB2,0xFBC2},
+    {0xFD3E,0xFD4F}, {0xFDCF,0xFDCF}, {0xFDFC,0xFDFF}, {0xFE10,0xFE19},
+    {0xFE30,0xFE52}, {0xFE54,0xFE66}, {0xFE68,0xFE6B}, {0xFF01,0xFF0F},
+    {0xFF1A,0xFF20}, {0xFF3B,0xFF40}, {0xFF5B,0xFF65}, {0xFFE0,0xFFE6},
+    {0xFFE8,0xFFEE}, {0xFFFC,0xFFFD}, {0x10100,0x10102}, {0x10137,0x1013F},
+    {0x10179,0x10189}, {0x1018C,0x1018E}, {0x10190,0x1019C},
+    {0x101A0,0x101A0}, {0x101D0,0x101FC}, {0x1039F,0x1039F},
+    {0x103D0,0x103D0}, {0x1056F,0x1056F}, {0x10857,0x10857},
+    {0x10877,0x10878}, {0x1091F,0x1091F}, {0x1093F,0x1093F},
+    {0x10A50,0x10A58}, {0x10A7F,0x10A7F}, {0x10AC8,0x10AC8},
+    {0x10AF0,0x10AF6}, {0x10B39,0x10B3F}, {0x10B99,0x10B9C},
+    {0x10EAD,0x10EAD}, {0x10F55,0x10F59}, {0x10F86,0x10F89},
+    {0x11047,0x1104D}, {0x110BB,0x110BC}, {0x110BE,0x110C1},
+    {0x11140,0x11143}, {0x11174,0x11175}, {0x111C5,0x111C8},
+    {0x111CD,0x111CD}, {0x111DB,0x111DB}, {0x111DD,0x111DF},
+    {0x11238,0x1123D}, {0x112A9,0x112A9}, {0x1144B,0x1144F},
+    {0x1145A,0x1145B}, {0x1145D,0x1145D}, {0x114C6,0x114C6},
+    {0x115C1,0x115D7}, {0x11641,0x11643}, {0x11660,0x1166C},
+    {0x116B9,0x116B9}, {0x1173C,0x1173F}, {0x1183B,0x1183B},
+    {0x11944,0x11946}, {0x119E2,0x119E2}, {0x11A3F,0x11A46},
+    {0x11A9A,0x11A9C}, {0x11A9E,0x11AA2}, {0x11B00,0x11B09},
+    {0x11C41,0x11C45}, {0x11C70,0x11C71}, {0x11EF7,0x11EF8},
+    {0x11F43,0x11F4F}, {0x11FD5,0x11FF1}, {0x11FFF,0x11FFF},
+    {0x12470,0x12474}, {0x12FF1,0x12FF2}, {0x16A6E,0x16A6F},
+    {0x16AF5,0x16AF5}, {0x16B37,0x16B3F}, {0x16B44,0x16B45},
+    {0x16E97,0x16E9A}, {0x16FE2,0x16FE2}, {0x1BC9C,0x1BC9C},
+    {0x1BC9F,0x1BC9F}, {0x1CF50,0x1CFC3}, {0x1D000,0x1D0F5},
+    {0x1D100,0x1D126}, {0x1D129,0x1D164}, {0x1D16A,0x1D16C},
+    {0x1D183,0x1D184}, {0x1D18C,0x1D1A9}, {0x1D1AE,0x1D1EA},
+    {0x1D200,0x1D241}, {0x1D245,0x1D245}, {0x1D300,0x1D356},
+    {0x1D6C1,0x1D6C1}, {0x1D6DB,0x1D6DB}, {0x1D6FB,0x1D6FB},
+    {0x1D715,0x1D715}, {0x1D735,0x1D735}, {0x1D74F,0x1D74F},
+    {0x1D76F,0x1D76F}, {0x1D789,0x1D789}, {0x1D7A9,0x1D7A9},
+    {0x1D7C3,0x1D7C3}, {0x1D800,0x1D9FF}, {0x1DA37,0x1DA3A},
+    {0x1DA6D,0x1DA74}, {0x1DA76,0x1DA83}, {0x1DA85,0x1DA8B},
+    {0x1E14F,0x1E14F}, {0x1E2FF,0x1E2FF}, {0x1E95E,0x1E95F},
+    {0x1ECAC,0x1ECAC}, {0x1ECB0,0x1ECB0}, {0x1ED2E,0x1ED2E},
+    {0x1EEF0,0x1EEF1}, {0x1F000,0x1F02B}, {0x1F030,0x1F093},
+    {0x1F0A0,0x1F0AE}, {0x1F0B1,0x1F0BF}, {0x1F0C1,0x1F0CF},
+    {0x1F0D1,0x1F0F5}, {0x1F10D,0x1F1AD}, {0x1F1E6,0x1F202},
+    {0x1F210,0x1F23B}, {0x1F240,0x1F248}, {0x1F250,0x1F251},
+    {0x1F260,0x1F265}, {0x1F300,0x1F6D7}, {0x1F6DC,0x1F6EC},
+    {0x1F6F0,0x1F6FC}, {0x1F700,0x1F776}, {0x1F77B,0x1F7D9},
+    {0x1F7E0,0x1F7EB}, {0x1F7F0,0x1F7F0}, {0x1F800,0x1F80B},
+    {0x1F810,0x1F847}, {0x1F850,0x1F859}, {0x1F860,0x1F887},
+    {0x1F890,0x1F8AD}, {0x1F8B0,0x1F8B1}, {0x1F900,0x1FA53},
+    {0x1FA60,0x1FA6D}, {0x1FA70,0x1FA7C}, {0x1FA80,0x1FA88},
+    {0x1FA90,0x1FABD}, {0x1FABF,0x1FAC5}, {0x1FACE,0x1FADB},
+    {0x1FAE0,0x1FAE8}, {0x1FAF0,0x1FAF8}, {0x1FB00,0x1FB92}, {0x1FB94,0x1FBCA}};
+
+#define N_UNI_PUNCT (sizeof UNI_PUNCT / sizeof *UNI_PUNCT)
+
+static int uni_punct(int32_t c) {
+	size_t lo = 0, hi = N_UNI_PUNCT;
+	while (lo < hi) {
+		size_t mid = lo + (hi - lo) / 2;
+		if (c < UNI_PUNCT[mid][0]) hi = mid;
+		else if (c > UNI_PUNCT[mid][1]) lo = mid + 1;
+		else return 1;
+	}
+	return 0;
+}
+
+/* Unicode whitespace: the Zs category plus tab, newline, form feed and
+ * carriage return. */
+static int uni_space(int32_t c) {
+	return c == 9 || c == 10 || c == 12 || c == 13 || c == 32 || c == 0xA0 ||
+	       c == 0x1680 || (c >= 0x2000 && c <= 0x200A) || c == 0x202F ||
+	       c == 0x205F || c == 0x3000;
+}
+
 /* ------------------------------------------------------------------- nodes */
 
 typedef enum {
@@ -1125,6 +1246,15 @@ static void node_unlink(Node *n) {
 	if (n->next) n->next->prev = n->prev;
 	else if (n->parent) n->parent->last = n->prev;
 	n->parent = n->prev = n->next = NULL;
+}
+
+static void node_insert_after(Node *at, Node *n) {
+	n->parent = at->parent;
+	n->prev = at;
+	n->next = at->next;
+	if (at->next) at->next->prev = n;
+	else if (at->parent) at->parent->last = n;
+	at->next = n;
 }
 
 static void node_insert_before(Node *at, Node *n) {
@@ -2024,8 +2154,18 @@ static size_t parse_reference(RefMap *refs, const char *s, size_t n) {
 
 /* ------------------------------------------------------- inline parsing */
 
-/* The subject of inline parsing: one block's accumulated text, a cursor, and
- * the stacks that emphasis and links need. */
+/* One run of `*` or `_`, with the flanking verdict computed when it was
+ * scanned.  The stack is doubly linked because process_emphasis walks it
+ * forwards looking for closers and backwards looking for openers. */
+typedef struct Delim Delim;
+struct Delim {
+	Delim *prev, *next;
+	Node *inl_text;
+	size_t length;
+	char delim_char;
+	int can_open, can_close;
+};
+
 /* An unresolved `[` or `![`.  The stack exists because a link's extent is
  * only known when its `]` is found, and the text in between has already been
  * parsed into nodes by then. */
@@ -2034,6 +2174,7 @@ struct Bracket {
 	Bracket *prev;
 	Node *inl_text;		/* the literal "[" node, replaced on a match */
 	size_t position;	/* just after the bracket */
+	Delim *prev_delim;	/* delimiter stack top when this was pushed */
 	int image, active, bracket_after;
 };
 
@@ -2042,7 +2183,28 @@ typedef struct {
 	size_t n, pos;
 	RefMap *refs;
 	Bracket *last_bracket;
-} Subject;
+	Delim *last_delim;
+} Subject;	/* one block's text, a cursor, and the two stacks */
+
+static void push_delimiter(Subject *s, char c, int can_open, int can_close,
+                           Node *inl) {
+	Delim *d = xcalloc(sizeof *d);
+	d->delim_char = c;
+	d->can_open = can_open;
+	d->can_close = can_close;
+	d->inl_text = inl;
+	d->length = inl->content.n;
+	d->prev = s->last_delim;
+	if (d->prev) d->prev->next = d;
+	s->last_delim = d;
+}
+
+static void remove_delimiter(Subject *s, Delim *d) {
+	if (d->next) d->next->prev = d->prev;
+	else s->last_delim = d->prev;
+	if (d->prev) d->prev->next = d->next;
+	free(d);
+}
 
 static void push_bracket(Subject *s, int image, Node *inl_text) {
 	Bracket *b = xcalloc(sizeof *b);
@@ -2052,6 +2214,7 @@ static void push_bracket(Subject *s, int image, Node *inl_text) {
 	b->inl_text = inl_text;
 	b->position = s->pos;
 	b->prev = s->last_bracket;
+	b->prev_delim = s->last_delim;
 	s->last_bracket = b;
 }
 
@@ -2067,7 +2230,7 @@ static void pop_bracket(Subject *s) {
 static int is_special(int c) {
 	switch (c) {
 	case '\n': case '\r': case '\\': case '&': case '`': case '<':
-	case '[': case ']': case '!':
+	case '[': case ']': case '!': case '*': case '_':
 		return 1;
 	default:
 		return 0;
@@ -2222,9 +2385,148 @@ static Node *handle_pointy_brace(Subject *s) {
 	return make_literal(N_TEXT, "<", 1);
 }
 
-/* shortcut: emphasis is added in the next commit, which is where the
- * delimiter stack and the real process_emphasis arrive. */
-static void process_emphasis(Subject *s) { (void)s; }
+/* The flanking rules, which are the nastiest paragraph in the spec.  A run is
+ * left-flanking if it is not followed by Unicode whitespace and either not
+ * followed by punctuation or preceded by whitespace or punctuation;
+ * right-flanking is the mirror image.  `_` is then further restricted so that
+ * intraword underscores do not open or close emphasis. */
+static size_t scan_delims(Subject *s, char c, int *can_open, int *can_close) {
+	size_t numdelims = 0;
+	int32_t before = 10, after = 10;
+	int left, right;
+
+	if (s->pos > 0) {
+		size_t bp = s->pos - 1;
+		while (bp > 0 && ((unsigned char)s->s[bp] >> 6) == 2) bp--;
+		utf8_decode(s->s, s->n, bp, &before);
+	}
+	while (s->pos < s->n && s->s[s->pos] == c) {
+		numdelims++;
+		s->pos++;
+	}
+	if (s->pos < s->n) utf8_decode(s->s, s->n, s->pos, &after);
+
+	left = numdelims > 0 && !uni_space(after) &&
+	       !(uni_punct(after) && !uni_space(before) && !uni_punct(before));
+	right = numdelims > 0 && !uni_space(before) &&
+	        !(uni_punct(before) && !uni_space(after) && !uni_punct(after));
+	if (c == '_') {
+		*can_open = left && (!right || uni_punct(before));
+		*can_close = right && (!left || uni_punct(after));
+	} else {
+		*can_open = left;
+		*can_close = right;
+	}
+	return numdelims;
+}
+
+static Node *handle_delim(Subject *s, char c) {
+	int can_open, can_close;
+	size_t start = s->pos;
+	size_t numdelims = scan_delims(s, c, &can_open, &can_close);
+	Node *inl = make_literal(N_TEXT, s->s + start, numdelims);
+	if (can_open || can_close)
+		push_delimiter(s, c, can_open, can_close, inl);
+	return inl;
+}
+
+/* Wraps everything between a matched opener and closer in <em> or <strong>,
+ * consuming two delimiter characters if both runs have two to spare and one
+ * otherwise.  A run with characters left over stays on the stack, which is
+ * how `***foo***` becomes <em><strong>: the first pass takes two from each
+ * end, the second takes the remaining one. */
+static Delim *insert_emph(Subject *s, Delim *opener, Delim *closer) {
+	Node *opener_inl = opener->inl_text, *closer_inl = closer->inl_text;
+	size_t open_chars = opener_inl->content.n;
+	size_t close_chars = closer_inl->content.n;
+	size_t use = (close_chars >= 2 && open_chars >= 2) ? 2 : 1;
+	Node *tmp, *tmpnext, *emph;
+	Delim *d, *prev;
+
+	open_chars -= use;
+	close_chars -= use;
+	opener_inl->content.n = open_chars;
+	opener_inl->content.p[open_chars] = 0;
+	closer_inl->content.n = close_chars;
+	closer_inl->content.p[close_chars] = 0;
+
+	for (d = closer->prev; d && d != opener; d = prev) {
+		prev = d->prev;
+		remove_delimiter(s, d);
+	}
+
+	emph = node_new(use == 1 ? N_EMPH : N_STRONG);
+	for (tmp = opener_inl->next; tmp && tmp != closer_inl; tmp = tmpnext) {
+		tmpnext = tmp->next;
+		node_unlink(tmp);
+		node_append(emph, tmp);
+	}
+	node_insert_after(opener_inl, emph);
+
+	if (open_chars == 0) {
+		node_unlink(opener_inl);
+		node_free(opener_inl);
+		remove_delimiter(s, opener);
+	}
+	if (close_chars == 0) {
+		Delim *next = closer->next;
+		node_unlink(closer_inl);
+		node_free(closer_inl);
+		remove_delimiter(s, closer);
+		return next;
+	}
+	return closer;
+}
+
+/* The spec's own algorithm, including the "rule of 3": a closer that could
+ * also open (or an opener that could also close) cannot match when the two
+ * run lengths sum to a multiple of three unless the closer's own length
+ * already is one.  openers_bottom remembers, per delimiter character and per
+ * closer length mod 3, how far back a failed search got, so the whole thing
+ * stays linear instead of quadratic. */
+static void process_emphasis(Subject *s, Delim *stack_bottom) {
+	Delim *closer = s->last_delim, *opener, *old_closer;
+	Delim *openers_bottom[3][128];
+	int opener_found, odd_match;
+
+	memset(openers_bottom, 0, sizeof openers_bottom);
+	while (closer && closer->prev != stack_bottom) closer = closer->prev;
+
+	while (closer) {
+		if (!closer->can_close) {
+			closer = closer->next;
+			continue;
+		}
+		opener = closer->prev;
+		opener_found = 0;
+		odd_match = 0;
+		while (opener && opener != stack_bottom &&
+		       opener != openers_bottom[closer->length % 3]
+		                              [(unsigned char)closer->delim_char]) {
+			if (opener->can_open && opener->delim_char == closer->delim_char) {
+				odd_match = (closer->can_open || opener->can_close) &&
+				            closer->length % 3 != 0 &&
+				            (opener->length + closer->length) % 3 == 0;
+				if (!odd_match) {
+					opener_found = 1;
+					break;
+				}
+			}
+			opener = opener->prev;
+		}
+		old_closer = closer;
+		if (opener_found) closer = insert_emph(s, opener, closer);
+		else closer = closer->next;
+		if (!opener_found) {
+			openers_bottom[old_closer->length % 3]
+			              [(unsigned char)old_closer->delim_char] =
+			    old_closer->prev;
+			if (!old_closer->can_open) remove_delimiter(s, old_closer);
+		}
+	}
+	while (s->last_delim && s->last_delim != stack_bottom)
+		remove_delimiter(s, s->last_delim);
+}
 
 /* `]` closes the nearest active `[` or `![`, if what follows makes a link:
  * an inline `(dest "title")`, a `[label]` in the reference map, a collapsed
@@ -2318,7 +2620,7 @@ static Node *handle_close_bracket(Subject *s) {
 	}
 	node_unlink(opener->inl_text);
 	node_free(opener->inl_text);
-	process_emphasis(s);
+	process_emphasis(s, opener->prev_delim);
 	pop_bracket(s);
 
 	/* Links do not nest: once one is made, every earlier link opener is
@@ -2370,6 +2672,10 @@ static int parse_inline(Subject *s, Node *parent) {
 	case ']':
 		n = handle_close_bracket(s);
 		break;
+	case '*':
+	case '_':
+		n = handle_delim(s, (char)c);
+		break;
 	case '!':
 		s->pos++;
 		if (s->pos < s->n && s->s[s->pos] == '[') {
@@ -2398,8 +2704,9 @@ static void parse_inlines(Node *parent, RefMap *refs) {
 	while (s.n > 0 && c_isspace((unsigned char)s.s[s.n - 1])) s.n--;
 	while (parse_inline(&s, parent))
 		;
-	process_emphasis(&s);
+	process_emphasis(&s, NULL);
 	while (s.last_bracket) pop_bracket(&s);
+	while (s.last_delim) remove_delimiter(&s, s.last_delim);
 }
 
 /* --------------------------------------------------------------- finalize */
@@ -2928,6 +3235,16 @@ static void render(Buf *out, Node *n, int depth) {
 		bputc(out, '>');
 		render_children(out, n, depth);
 		bputs(out, "</a>");
+		break;
+	case N_EMPH:
+		bputs(out, "<em>");
+		render_children(out, n, depth);
+		bputs(out, "</em>");
+		break;
+	case N_STRONG:
+		bputs(out, "<strong>");
+		render_children(out, n, depth);
+		bputs(out, "</strong>");
 		break;
 	case N_IMAGE:
 		bputs(out, "<img src=\"");
