@@ -73,6 +73,23 @@ Ranked by how little we control them.
 - Performance.  The parser is O(n) per line in the normal case and makes no
   attempt to bound the pathological ones beyond the depth limit.
 
+## The entity table
+
+The 2125 HTML5 named character references in `cmark.c` are generated data, not
+hand-written, and the one-liner that produced them is:
+
+```sh
+python3 -c 'import html.entities
+for k, v in sorted(html.entities.html5.items()):
+    if k.endswith(";"):
+        print(k[:-1], v.encode("utf-8").hex())'
+```
+
+CPython ships the WHATWG table, which is the one the CommonMark spec points
+at.  Keys without a trailing semicolon are dropped: CommonMark requires the
+semicolon, so `&amp` without one is literal text.  The values are written as
+octal escapes so the source file stays ASCII.
+
 ## Commit sequence
 
 - [x] line reader, paragraphs, HTML escaping, the spec runner, the pin
@@ -107,7 +124,7 @@ Ranked by how little we control them.
   - why: replaces the placeholder inline pass.  Hard breaks first because they
     are the only inline that depends on trailing whitespace, which the
     paragraph accumulator must not have eaten.
-- [ ] entity and numeric character references
+- [x] entity and numeric character references
   - why: needs the HTML5 named entity table, which is bulk data and belongs in
     its own commit so the diff of real code stays readable.
 - [ ] code spans
