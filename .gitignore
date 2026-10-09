@@ -1,0 +1,5 @@
+# build products
+cmark
+*.o
+# scratch: extracted spec corpus, per-run reports
+scratch/
