@@ -177,7 +177,7 @@ against 15.0 and the difference touches no example in the suite.
   setext after reference definitions, full Unicode case folding
   - why: 648 -> 652.  Each one was a single condition in the wrong place, and
     all four were found by reading the failure dump rather than the spec.
-- [ ] the depth limit and `make test-asan`
+- [x] the depth limit and `make test-asan`
   - why: the limit is cheap but the test for it is the point, and it can only
     be written once containers and inline brackets both recurse.
 - [ ] README with the per-section table and the shortfalls named

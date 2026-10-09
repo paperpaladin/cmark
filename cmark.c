@@ -1482,18 +1482,38 @@ static Node *node_new(Type t) {
 	return n;
 }
 
-static void node_free(Node *n) {
-	Node *c, *next;
-	if (!n) return;
-	for (c = n->first; c; c = next) {
-		next = c->next;
-		node_free(c);
-	}
+static void free_one(Node *n) {
 	bfree(&n->content);
 	bfree(&n->info);
 	bfree(&n->url);
 	bfree(&n->title);
 	free(n);
+}
+
+/* Iterative, not recursive.  A document can legitimately build an inline tree
+ * a few hundred deep and a hostile one can build it half a million deep, and
+ * a recursive free is a stack overflow in the teardown path -- the one place
+ * where there is nothing left to check a depth against.  Each step either
+ * detaches the first child and descends, or frees a leaf and climbs the
+ * parent pointer, so it is O(nodes) with O(1) stack. */
+static void node_free(Node *root) {
+	Node *cur = root;
+	if (!root) return;
+	root->parent = NULL;
+	while (cur) {
+		if (cur->first) {
+			Node *child = cur->first;
+			cur->first = child->next;
+			if (child->next) child->next->prev = NULL;
+			else cur->last = NULL;
+			child->next = child->prev = NULL;
+			cur = child;
+		} else {
+			Node *up = cur->parent;
+			free_one(cur);
+			cur = up;
+		}
+	}
 }
 
 static void node_append(Node *parent, Node *child) {
@@ -3104,6 +3124,20 @@ static void finalize_document(Parser *p) {
 	while (p->cur) p->cur = finalize(p, p->cur);
 }
 
+/* The inline parser builds <em>, <strong>, <a> and <img> nodes by nesting,
+ * and nothing in it bounds that nesting: 2n asterisks around a word produce n
+ * nested <strong>, and 2n `![` produce n nested images.  The renderer
+ * recurses, so this is checked once over the finished tree and the whole
+ * document is refused rather than silently truncated.  The recursion here is
+ * itself bounded by MAX_DEPTH, which is the same bound the renderer needs. */
+static int tree_too_deep(Node *n, int d) {
+	Node *c;
+	if (d > MAX_DEPTH) return 1;
+	for (c = n->first; c; c = c->next)
+		if (tree_too_deep(c, d + 1)) return 1;
+	return 0;
+}
+
 /* Inline content is parsed after the whole block structure is known, because
  * a link reference definition may be defined after its first use. */
 static void process_inlines(Node *n, RefMap *refs) {
@@ -3600,11 +3634,13 @@ static int run(const char *src, size_t srclen, Buf *out) {
 			if (p.too_deep) break;
 		}
 	}
-	if (p.too_deep) rc = 1;
-	else {
+	if (p.too_deep) {
+		rc = 1;
+	} else {
 		finalize_document(&p);
 		process_inlines(p.doc, &p.refs);
-		render(out, p.doc, 0);
+		if (tree_too_deep(p.doc, 0)) rc = 1;
+		else render(out, p.doc, 0);
 	}
 	node_free(p.doc);
 	node_free(p.dead);

@@ -46,6 +46,44 @@ else
 	nok "empty input gives empty output, exit 0"
 fi
 
+# --- the nesting-depth limit ------------------------------------------------
+# Deeply nested containers and deeply nested inline emphasis are the two ways
+# a Markdown parser dies on untrusted input, and they fail in different
+# places: containers recurse in the block parser, emphasis recurses in the
+# renderer and in the teardown.  The limit has to be an error return, not a
+# stack overflow, so these assert the exit status exactly -- 1 is "too deep",
+# 139 or 134 would be a crash and must fail the suite.
+printf '\n--- nesting-depth limit\n'
+too_deep() { # too_deep <python> <label>
+	python3 -c "$1" | ./cmark >/dev/null 2>&1
+	st=$?
+	if [ "$st" -eq 1 ]; then ok "rejects $2 (exit 1)"
+	else nok "rejects $2 (exit $st, wanted 1)"; fi
+}
+fine() { # fine <python> <label>
+	python3 -c "$1" | ./cmark >/dev/null 2>&1
+	st=$?
+	if [ "$st" -eq 0 ]; then ok "accepts $2 (exit 0)"
+	else nok "accepts $2 (exit $st, wanted 0)"; fi
+}
+fine     'print("> " * 100 + "x")'            '100 nested block quotes'
+too_deep 'print("> " * 50000 + "x")'          '50000 nested block quotes'
+too_deep 'print(">" * 200000 + "x")'          '200000 block quote markers, no spaces'
+fine     'print("- " * 100 + "x")'            '100 nested list items'
+too_deep 'print("- " * 50000 + "x")'          '50000 nested list items'
+fine     'print("    " * 50000 + "x")'        '200000 columns of indentation (one code block, not nesting)'
+# 2n delimiters around a word nest n deep, so these two straddle the limit.
+fine     'print("*" * 400 + "x" + "*" * 400)' '200 nested strong emphasis'
+too_deep 'print("*" * 2000 + "x" + "*" * 2000)' '1000 nested strong emphasis'
+too_deep 'print("![" * 2000 + "x" + "](b)" * 2000)' '2000 nested images'
+# Pathological but flat: these must render, not error.  100000 unmatched
+# brackets build a 100000-entry bracket stack and no tree; 60000 asterisks
+# are one delimiter run that pairs with nothing.
+fine     'print("[" * 100000 + "x")'          '100000 unclosed inline brackets'
+fine     'print("*" * 60000)'                 '60000 asterisks with no pairing'
+fine     'print("`" * 20000)'                 '20000 backticks with no pairing'
+fine     'print("a" * 1000000)'               'a 1MB single-line paragraph'
+
 # --- hostile input ----------------------------------------------------------
 # Not an oracle, a smoke test: any byte sequence must render or error, never
 # crash.  Markdown has no invalid input, so exit 0 or 1 are both fine.
