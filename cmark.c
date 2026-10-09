@@ -129,6 +129,7 @@ struct Node {
 	char delim, bullet;	/* list and item */
 	int marker_off, padding;
 	int html_type;
+	int start_line;
 	int last_line_blank, last_line_checked;
 	Buf url, title;		/* link and image */
 };
@@ -207,6 +208,7 @@ typedef struct {
 	int indent;		/* columns of indentation at fns */
 	int blank;
 	int partial_tab;
+	int lineno;
 	int too_deep;
 } Parser;
 
@@ -279,6 +281,7 @@ static Node *add_child(Parser *p, Node *parent, Type t) {
 		return parent;
 	}
 	child = node_new(t);
+	child->start_line = p->lineno;
 	node_append(parent, child);
 	return child;
 }
@@ -339,6 +342,73 @@ static int scan_close_fence(Parser *p, size_t i, char c) {
 	while (i < p->len && is_space_or_tab(p->line[i])) i++;
 	if (i >= p->len || !is_line_end(p->line[i])) return 0;
 	return count;
+}
+
+/* A bullet or ordered list marker.  `interrupts` is true when the marker
+ * would start a list inside an open paragraph, which the spec restricts: the
+ * item must be non-empty, and an ordered marker must start at 1. */
+typedef struct {
+	int ordered, start, padding, marker_off;
+	char bullet, delim;
+} ListData;
+
+static size_t parse_list_marker(Parser *p, size_t pos, int interrupts,
+                                ListData *d) {
+	size_t startpos = pos, i;
+	int c = pos < p->len ? (unsigned char)p->line[pos] : 0;
+
+	memset(d, 0, sizeof *d);
+	if (c == '*' || c == '-' || c == '+') {
+		pos++;
+		if (pos >= p->len || !c_isspace((unsigned char)p->line[pos])) return 0;
+		if (interrupts) {
+			for (i = pos; i < p->len && is_space_or_tab(p->line[i]); i++)
+				;
+			if (i >= p->len || is_line_end(p->line[i])) return 0;
+		}
+		d->ordered = 0;
+		d->bullet = (char)c;
+	} else if (c >= '0' && c <= '9') {
+		int start = 0, digits = 0;
+		do {
+			start = 10 * start + (p->line[pos] - '0');
+			pos++;
+			digits++;
+		} while (digits < 9 && pos < p->len && p->line[pos] >= '0' &&
+		         p->line[pos] <= '9');
+		if (interrupts && start != 1) return 0;
+		c = pos < p->len ? (unsigned char)p->line[pos] : 0;
+		if (c != '.' && c != ')') return 0;
+		pos++;
+		if (pos >= p->len || !c_isspace((unsigned char)p->line[pos])) return 0;
+		if (interrupts) {
+			for (i = pos; i < p->len && is_space_or_tab(p->line[i]); i++)
+				;
+			if (i >= p->len || is_line_end(p->line[i])) return 0;
+		}
+		d->ordered = 1;
+		d->start = start;
+		d->delim = (char)c;
+	} else {
+		return 0;
+	}
+	return pos - startpos;
+}
+
+/* Two markers belong to the same list if they are the same kind: same bullet
+ * character, or same ordered delimiter.  `1.` and `1)` are two lists. */
+static int lists_match(Node *list, ListData *d) {
+	return list->ordered == d->ordered && list->delim == d->delim &&
+	       list->bullet == d->bullet;
+}
+
+static void apply_list(Node *n, ListData *d) {
+	n->ordered = d->ordered;
+	n->start = d->start;
+	n->bullet = d->bullet;
+	n->delim = d->delim;
+	n->padding = d->padding;
+	n->marker_off = d->marker_off;
 }
 
 /* `[=]+ [ \t]* [\r\n]` is an h1 underline, `[-]+ ...` an h2.  Returns the
@@ -427,6 +497,35 @@ static void remove_trailing_blank_lines(Buf *b) {
 	b->p[b->n] = 0;
 }
 
+/* A list is loose if any of its items is followed by a blank line, or if any
+ * item's own children are separated by one.  This is a property of the whole
+ * list and can only be decided once it is closed. */
+static int ends_with_blank_line(Node *n) {
+	if (n->last_line_checked) return n->last_line_blank;
+	n->last_line_checked = 1;
+	if ((n->t == N_LIST || n->t == N_ITEM) && n->last)
+		return ends_with_blank_line(n->last);
+	return n->last_line_blank;
+}
+
+static void set_list_tight(Node *list) {
+	Node *item, *sub;
+	list->tight = 1;
+	for (item = list->first; item; item = item->next) {
+		if (item->last_line_blank && item->next) {
+			list->tight = 0;
+			break;
+		}
+		for (sub = item->first; sub; sub = sub->next) {
+			if (ends_with_blank_line(sub) && (item->next || sub->next)) {
+				list->tight = 0;
+				break;
+			}
+		}
+		if (!list->tight) break;
+	}
+}
+
 static Node *finalize(Parser *p, Node *b) {
 	Node *parent = b->parent;
 	(void)p;
@@ -449,6 +548,9 @@ static Node *finalize(Parser *p, Node *b) {
 			b->content.n -= i;
 			b->content.p[b->content.n] = 0;
 		}
+		break;
+	case N_LIST:
+		set_list_tight(b);
 		break;
 	case N_PARA:
 		if (b->content.n == 0) {
@@ -496,6 +598,14 @@ static Node *check_open_blocks(Parser *p, int *all_matched) {
 				return cont->parent;
 			}
 			break;
+		case N_ITEM:
+			if (p->indent >= cont->marker_off + cont->padding)
+				advance(p, (size_t)(cont->marker_off + cont->padding), 1);
+			else if (p->blank && cont->first)
+				advance(p, p->fns - p->off, 0);
+			else
+				return cont->parent;
+			break;
 		case N_CODE:
 			if (!cont->fenced) {
 				if (p->indent >= CODE_INDENT) advance(p, CODE_INDENT, 1);
@@ -536,6 +646,7 @@ static Node *check_open_blocks(Parser *p, int *all_matched) {
 static void open_new_blocks(Parser *p, Node **cont, int all_matched) {
 	size_t matched;
 	int lev;
+	ListData ld;
 	int maybe_lazy = p->cur->t == N_PARA;
 	while ((*cont)->t != N_CODE && (*cont)->t != N_HTML_BLOCK) {
 		int indented;
@@ -574,6 +685,41 @@ static void open_new_blocks(Parser *p, Node **cont, int all_matched) {
 		           scan_hrule(p, p->fns)) {
 			*cont = add_child(p, *cont, N_HRULE);
 			advance(p, p->len - 1 - p->off, 0);
+		} else if ((!indented || (*cont)->t == N_LIST) && p->indent < 4 &&
+		           (matched = parse_list_marker(p, p->fns,
+		                                        (*cont)->t == N_PARA, &ld))
+		           != 0) {
+			size_t save_off, save_col;
+			int save_tab, pad;
+			advance(p, p->fns + matched - p->off, 0);
+			save_tab = p->partial_tab;
+			save_off = p->off;
+			save_col = p->col;
+			while (p->col - save_col <= 5 && p->off < p->len &&
+			       is_space_or_tab(p->line[p->off]))
+				advance(p, 1, 1);
+			pad = (int)(p->col - save_col);
+			/* A marker followed by five or more spaces, or by nothing at
+			 * all, takes one space of padding and the rest is content. */
+			if (pad >= 5 || pad < 1 ||
+			    (p->off < p->len && is_line_end(p->line[p->off]))) {
+				ld.padding = (int)matched + 1;
+				p->off = save_off;
+				p->col = save_col;
+				p->partial_tab = save_tab;
+				if (p->off < p->len && is_space_or_tab(p->line[p->off]))
+					advance(p, 1, 1);
+			} else {
+				ld.padding = (int)matched + pad;
+			}
+			ld.marker_off = p->indent;
+			if ((*cont)->t != N_LIST || !lists_match(*cont, &ld)) {
+				*cont = add_child(p, *cont, N_LIST);
+				apply_list(*cont, &ld);
+			}
+			if (p->too_deep) return;
+			*cont = add_child(p, *cont, N_ITEM);
+			apply_list(*cont, &ld);
 		} else if (indented && !maybe_lazy && !p->blank) {
 			advance(p, CODE_INDENT, 1);
 			*cont = add_child(p, *cont, N_CODE);
@@ -591,9 +737,10 @@ static void add_text_to_container(Parser *p, Node *cont, Node *last_matched) {
 	find_first_nonspace(p);
 
 	if (p->blank && cont->last) cont->last->last_line_blank = 1;
-	cont->last_line_blank = p->blank && cont->t != N_BQUOTE &&
-	                        cont->t != N_HEADING && cont->t != N_HRULE &&
-	                        !(cont->t == N_CODE && cont->fenced);
+	cont->last_line_blank =
+	    p->blank && cont->t != N_BQUOTE && cont->t != N_HEADING &&
+	    cont->t != N_HRULE && !(cont->t == N_CODE && cont->fenced) &&
+	    !(cont->t == N_ITEM && !cont->first && cont->start_line == p->lineno);
 	for (tmp = cont; tmp->parent; tmp = tmp->parent)
 		tmp->parent->last_line_blank = 0;
 
@@ -677,12 +824,17 @@ static void render(Buf *out, Node *n, int depth) {
 	case N_DOC:
 		render_children(out, n, depth);
 		break;
-	case N_PARA:
-		cr(out);
-		bputs(out, "<p>");
+	case N_PARA: {
+		/* A paragraph directly inside an item of a tight list has no <p>.
+		 * "Directly" matters: a paragraph in a block quote in a tight item
+		 * keeps its tags, because the grandparent is the quote. */
+		Node *gp = n->parent ? n->parent->parent : NULL;
+		int tight = gp && gp->t == N_LIST && gp->tight;
+		if (!tight) { cr(out); bputs(out, "<p>"); }
 		render_children(out, n, depth);
-		bputs(out, "</p>\n");
+		if (!tight) bputs(out, "</p>\n");
 		break;
+	}
 	case N_HEADING: {
 		char tag[8];
 		cr(out);
@@ -693,6 +845,24 @@ static void render(Buf *out, Node *n, int depth) {
 		bputs(out, tag);
 		break;
 	}
+	case N_LIST:
+		cr(out);
+		if (!n->ordered) bputs(out, "<ul>\n");
+		else if (n->start == 1) bputs(out, "<ol>\n");
+		else {
+			char tag[32];
+			snprintf(tag, sizeof tag, "<ol start=\"%d\">\n", n->start);
+			bputs(out, tag);
+		}
+		render_children(out, n, depth);
+		bputs(out, n->ordered ? "</ol>\n" : "</ul>\n");
+		break;
+	case N_ITEM:
+		cr(out);
+		bputs(out, "<li>");
+		render_children(out, n, depth);
+		bputs(out, "</li>\n");
+		break;
 	case N_BQUOTE:
 		cr(out);
 		bputs(out, "<blockquote>\n");
@@ -763,6 +933,7 @@ static int run(const char *src, size_t srclen, Buf *out) {
 
 	for (start = 0, i = 0; i < text.n; i++) {
 		if (text.p[i] == '\n') {
+			p.lineno++;
 			process_line(&p, text.p + start, i - start + 1);
 			start = i + 1;
 			if (p.too_deep) break;

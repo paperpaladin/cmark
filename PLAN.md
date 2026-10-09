@@ -93,7 +93,7 @@ Ranked by how little we control them.
 - [x] block quotes
   - why: the first real container, and the first place lazy continuation can
     be observed.
-- [ ] lists, bullet and ordered
+- [x] lists, bullet and ordered
   - why: the hardest container.  Item continuation, padding, `lists_match`,
     and tight versus loose, which is a property of the whole list decided at
     finalize time.
