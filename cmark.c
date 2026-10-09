@@ -1904,7 +1904,7 @@ typedef struct {
  * else is swallowed in runs by handle_text. */
 static int is_special(int c) {
 	switch (c) {
-	case '\n': case '\r': case '\\': case '&':
+	case '\n': case '\r': case '\\': case '&': case '`':
 		return 1;
 	default:
 		return 0;
@@ -1960,6 +1960,63 @@ static Node *handle_backslash(Subject *s) {
 	return make_literal(N_TEXT, "\\", 1);
 }
 
+/* Line endings inside a code span become spaces, and then one space is
+ * removed from each end if the content begins and ends with a space but is
+ * not all spaces.  Both halves are spec 0.29+ behaviour and both are in the
+ * suite: `` ` `` is a code span holding one space, which is not stripped. */
+static void normalize_code(Buf *b) {
+	size_t r, w = 0;
+	int nonspace = 0;
+	for (r = 0; r < b->n; r++) {
+		if (b->p[r] == '\r') {
+			if (r + 1 >= b->n || b->p[r + 1] != '\n') b->p[w++] = ' ';
+		} else if (b->p[r] == '\n') {
+			b->p[w++] = ' ';
+		} else {
+			b->p[w++] = b->p[r];
+		}
+	}
+	for (r = 0; r < w; r++)
+		if (b->p[r] != ' ') nonspace = 1;
+	if (nonspace && w >= 2 && b->p[0] == ' ' && b->p[w - 1] == ' ') {
+		memmove(b->p, b->p + 1, w - 2);
+		w -= 2;
+	}
+	b->n = w;
+	if (b->p) b->p[b->n] = 0;
+}
+
+/* A code span is delimited by backtick runs of equal length.  An opening run
+ * with no matching run is literal text.
+ * shortcut: the search for the closing run is linear from the opening one, so
+ * a line of n backticks is O(n^2).  cmark caches backtick positions; the
+ * upgrade is the same table if a document ever makes it matter. */
+static Node *handle_backticks(Subject *s) {
+	size_t start = s->pos, openlen, cstart, j;
+	while (s->pos < s->n && s->s[s->pos] == '`') s->pos++;
+	openlen = s->pos - start;
+	cstart = s->pos;
+	for (j = cstart; j < s->n;) {
+		size_t k;
+		if (s->s[j] != '`') { j++; continue; }
+		for (k = j; k < s->n && s->s[k] == '`'; k++)
+			;
+		if (k - j == openlen) {
+			Buf b = {0};
+			Node *n;
+			bput(&b, s->s + cstart, j - cstart);
+			normalize_code(&b);
+			s->pos = k;
+			n = make_literal(N_CODESPAN, b.p, b.n);
+			bfree(&b);
+			return n;
+		}
+		j = k;
+	}
+	s->pos = cstart;
+	return make_literal(N_TEXT, s->s + start, openlen);
+}
+
 /* An ampersand that does not begin a valid character reference is literal. */
 static Node *handle_entity(Subject *s) {
 	Buf out = {0};
@@ -1993,6 +2050,9 @@ static int parse_inline(Subject *s, Node *parent) {
 		break;
 	case '&':
 		n = handle_entity(s);
+		break;
+	case '`':
+		n = handle_backticks(s);
 		break;
 	default:
 		n = handle_text(s);
@@ -2465,6 +2525,11 @@ static void render(Buf *out, Node *n, int depth) {
 		break;
 	case N_TEXT:
 		escape_html(out, n->content.p, n->content.n);
+		break;
+	case N_CODESPAN:
+		bputs(out, "<code>");
+		escape_html(out, n->content.p, n->content.n);
+		bputs(out, "</code>");
 		break;
 	case N_SOFTBREAK:
 		bputc(out, '\n');

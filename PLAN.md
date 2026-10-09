@@ -127,7 +127,7 @@ octal escapes so the source file stays ASCII.
 - [x] entity and numeric character references
   - why: needs the HTML5 named entity table, which is bulk data and belongs in
     its own commit so the diff of real code stays readable.
-- [ ] code spans
+- [x] code spans
   - why: highest precedence inline, so everything after it must respect it.
 - [ ] autolinks and raw HTML
   - why: both start at `<`; one dispatch point, two grammars.
