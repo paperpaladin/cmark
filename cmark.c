@@ -351,11 +351,32 @@ static void parse_inlines(Node *parent) {
 
 /* --------------------------------------------------------------- finalize */
 
+/* Trailing blank lines are not part of an indented code block: the block ends
+ * at the last non-blank line. */
+static void remove_trailing_blank_lines(Buf *b) {
+	size_t i;
+	for (i = b->n; i > 0; i--) {
+		char c = b->p[i - 1];
+		if (c != ' ' && c != '\t' && !is_line_end(c)) break;
+	}
+	if (i == 0) { b->n = 0; if (b->p) b->p[0] = 0; return; }
+	for (; i < b->n; i++)
+		if (is_line_end(b->p[i])) break;
+	b->n = i;
+	b->p[b->n] = 0;
+}
+
 static Node *finalize(Parser *p, Node *b) {
 	Node *parent = b->parent;
 	(void)p;
 	b->open = 0;
 	switch (b->t) {
+	case N_CODE:
+		if (!b->fenced) {
+			remove_trailing_blank_lines(&b->content);
+			bputc(&b->content, '\n');
+		}
+		break;
 	case N_PARA:
 		if (b->content.n == 0) {
 			node_unlink(b);
@@ -389,17 +410,18 @@ static void process_inlines(Node *n) {
 static Node *check_open_blocks(Parser *p, int *all_matched) {
 	Node *cont = p->doc;
 	*all_matched = 0;
-	for (;;) {
-		Node *next = cont->last;
-		if (!next || !next->open) break;
-		if (!(next->t == N_BQUOTE || next->t == N_ITEM || next->t == N_LIST ||
-		      next->t == N_PARA || next->t == N_HEADING || next->t == N_CODE ||
-		      next->t == N_HTML_BLOCK))
-			break;
-		cont = next;
+	while (cont->last && cont->last->open) {
+		cont = cont->last;
+		find_first_nonspace(p);
 		switch (cont->t) {
+		case N_CODE:
+			if (!cont->fenced) {
+				if (p->indent >= CODE_INDENT) advance(p, CODE_INDENT, 1);
+				else if (p->blank) advance(p, p->fns - p->off, 0);
+				else return cont->parent;
+			}
+			break;
 		case N_PARA:
-			find_first_nonspace(p);
 			if (p->blank) return cont->parent;
 			break;
 		case N_HEADING:
@@ -417,6 +439,7 @@ static Node *check_open_blocks(Parser *p, int *all_matched) {
 static void open_new_blocks(Parser *p, Node **cont, int all_matched) {
 	size_t matched;
 	int lev;
+	int maybe_lazy = p->cur->t == N_PARA;
 	while ((*cont)->t != N_CODE && (*cont)->t != N_HTML_BLOCK) {
 		int indented;
 		find_first_nonspace(p);
@@ -439,11 +462,15 @@ static void open_new_blocks(Parser *p, Node **cont, int all_matched) {
 		           scan_hrule(p, p->fns)) {
 			*cont = add_child(p, *cont, N_HRULE);
 			advance(p, p->len - 1 - p->off, 0);
+		} else if (indented && !maybe_lazy && !p->blank) {
+			advance(p, CODE_INDENT, 1);
+			*cont = add_child(p, *cont, N_CODE);
 		} else {
 			break;
 		}
 		if (p->too_deep) return;
 		if (accepts_lines((*cont)->t)) break;
+		maybe_lazy = 0;
 	}
 }
 
@@ -557,6 +584,21 @@ static void render(Buf *out, Node *n, int depth) {
 	case N_HRULE:
 		cr(out);
 		bputs(out, "<hr />\n");
+		break;
+	case N_CODE:
+		cr(out);
+		if (n->info.n == 0) {
+			bputs(out, "<pre><code>");
+		} else {
+			size_t k = 0;
+			while (k < n->info.n && !c_isspace((unsigned char)n->info.p[k]))
+				k++;
+			bputs(out, "<pre><code class=\"language-");
+			escape_html(out, n->info.p, k);
+			bputs(out, "\">");
+		}
+		escape_html(out, n->content.p, n->content.n);
+		bputs(out, "</code></pre>\n");
 		break;
 	case N_TEXT:
 		escape_html(out, n->content.p, n->content.n);

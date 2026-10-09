@@ -84,7 +84,7 @@ Ranked by how little we control them.
 - [x] setext headings
   - why: the first block type that mutates an already-open block, which is
     what forces `all_matched` into the signature.
-- [ ] indented code blocks
+- [x] indented code blocks
   - why: needs the column-accurate tab handling in `advance`, which nothing
     before this exercises.
 - [ ] fenced code blocks
