@@ -1410,6 +1410,57 @@ static size_t scan_closing_tag(const char *s, size_t n, size_t i) {
 	return 0;
 }
 
+/* `<!-->`, `<!--->`, or `<!--` anything `-->` (CommonMark 0.31 relaxed this:
+ * the interior may now contain `--`). */
+static size_t scan_comment(const char *s, size_t n, size_t i) {
+	size_t j = i + 4;
+	if (i + 4 > n || memcmp(s + i, "<!--", 4) != 0) return 0;
+	if (j < n && s[j] == '>') return j + 1 - i;
+	if (j + 1 < n && s[j] == '-' && s[j + 1] == '>') return j + 2 - i;
+	for (; j + 2 < n; j++)
+		if (s[j] == '-' && s[j + 1] == '-' && s[j + 2] == '>')
+			return j + 3 - i;
+	return 0;
+}
+
+static size_t scan_pi(const char *s, size_t n, size_t i) {
+	size_t j;
+	if (i + 2 > n || s[i] != '<' || s[i + 1] != '?') return 0;
+	for (j = i + 2; j + 1 < n; j++)
+		if (s[j] == '?' && s[j + 1] == '>') return j + 2 - i;
+	return 0;
+}
+
+static size_t scan_declaration(const char *s, size_t n, size_t i) {
+	size_t j;
+	if (i + 3 > n || s[i] != '<' || s[i + 1] != '!' ||
+	    !c_isalpha((unsigned char)s[i + 2]))
+		return 0;
+	for (j = i + 3; j < n; j++)
+		if (s[j] == '>') return j + 1 - i;
+	return 0;
+}
+
+static size_t scan_cdata(const char *s, size_t n, size_t i) {
+	size_t j;
+	if (i + 9 > n || memcmp(s + i, "<![CDATA[", 9) != 0) return 0;
+	for (j = i + 9; j + 2 < n; j++)
+		if (s[j] == ']' && s[j + 1] == ']' && s[j + 2] == '>')
+			return j + 3 - i;
+	return 0;
+}
+
+/* Any of the six.  Used for inline raw HTML and for HTML block type 7. */
+static size_t scan_html_tag(const char *s, size_t n, size_t i) {
+	size_t m;
+	if ((m = scan_open_tag(s, n, i, NULL, NULL)) != 0) return m;
+	if ((m = scan_closing_tag(s, n, i)) != 0) return m;
+	if ((m = scan_comment(s, n, i)) != 0) return m;
+	if ((m = scan_pi(s, n, i)) != 0) return m;
+	if ((m = scan_declaration(s, n, i)) != 0) return m;
+	return scan_cdata(s, n, i);
+}
+
 /* The seven HTML block kinds, by start condition.  Types 1-5 end on a line
  * containing a specific string; types 6 and 7 end on a blank line. */
 static const char *const HTML6[] = {
@@ -1797,6 +1848,54 @@ static long scan_link_title(const char *s, size_t n, size_t i, size_t *ts,
 	return -1;
 }
 
+/* `<scheme:anything-but-space-or-angle>` with a 2 to 32 character scheme.
+ * Returns the length including both angle brackets, or 0. */
+static size_t scan_autolink_uri(const char *s, size_t n, size_t i) {
+	size_t j = i + 1, k;
+	if (i >= n || s[i] != '<') return 0;
+	if (j >= n || !c_isalpha((unsigned char)s[j])) return 0;
+	for (k = j + 1; k < n && k - j < 32; k++) {
+		char c = s[k];
+		if (c_isalnum((unsigned char)c) || c == '.' || c == '+' || c == '-')
+			continue;
+		break;
+	}
+	if (k - j < 2 || k >= n || s[k] != ':') return 0;
+	for (k++; k < n; k++) {
+		unsigned char c = (unsigned char)s[k];
+		if (c == '>') return k + 1 - i;
+		if (c <= 0x20 || c == '<') return 0;
+	}
+	return 0;
+}
+
+static int email_local(int c) {
+	return c_isalnum(c) || strchr(".!#$%&'*+/=?^_`{|}~-", c) != NULL;
+}
+
+/* `<local@label(.label)*>`, each label 1 to 63 characters of letters, digits
+ * and hyphens, not starting or ending with a hyphen. */
+static size_t scan_autolink_email(const char *s, size_t n, size_t i) {
+	size_t j = i + 1, start;
+	if (i >= n || s[i] != '<') return 0;
+	for (start = j; j < n && email_local((unsigned char)s[j]); j++)
+		;
+	if (j == start || j >= n || s[j] != '@') return 0;
+	for (;;) {
+		size_t lab;
+		j++;
+		if (j >= n || !c_isalnum((unsigned char)s[j])) return 0;
+		for (lab = j; j < n && (c_isalnum((unsigned char)s[j]) || s[j] == '-');
+		     j++)
+			;
+		if (j - lab > 63 || s[j - 1] == '-') return 0;
+		if (j < n && s[j] == '.') continue;
+		break;
+	}
+	if (j < n && s[j] == '>') return j + 1 - i;
+	return 0;
+}
+
 /* Spaces and tabs, then at most one line ending, then spaces and tabs. */
 static size_t spnl(const char *s, size_t n, size_t i) {
 	while (i < n && is_space_or_tab(s[i])) i++;
@@ -1823,6 +1922,30 @@ static void unescape_buf(Buf *b) {
 	unescape_backslashes(&t);
 	bfree(b);
 	*b = t;
+}
+
+static void decode_entities_into(Buf *out, const char *s, size_t n) {
+	size_t i = 0;
+	while (i < n) {
+		if (s[i] == '&') {
+			size_t m = decode_entity(out, s, n, i);
+			if (m) { i += m; continue; }
+		}
+		bputc(out, s[i]);
+		i++;
+	}
+}
+
+/* An autolink destination keeps its backslashes -- there are no escapes
+ * inside angle brackets -- but entities are decoded, and an email autolink
+ * gains a mailto: scheme. */
+static void clean_autolink(Buf *out, const char *s, size_t n, int email) {
+	Buf t = {0};
+	bput(&t, s, n);
+	btrim(&t);
+	if (email) bputs(out, "mailto:");
+	decode_entities_into(out, t.p, t.n);
+	bfree(&t);
 }
 
 static void clean_url(Buf *out, const char *s, size_t n) {
@@ -1904,7 +2027,7 @@ typedef struct {
  * else is swallowed in runs by handle_text. */
 static int is_special(int c) {
 	switch (c) {
-	case '\n': case '\r': case '\\': case '&': case '`':
+	case '\n': case '\r': case '\\': case '&': case '`': case '<':
 		return 1;
 	default:
 		return 0;
@@ -2033,7 +2156,33 @@ static Node *handle_entity(Subject *s) {
 	return n;
 }
 
-/* shortcut: code spans, emphasis, links, images, autolinks and raw
+/* Everything that can start with `<`: a URI autolink, an email autolink, a
+ * raw HTML tag, or a literal less-than sign. */
+static Node *handle_pointy_brace(Subject *s) {
+	size_t m;
+	Node *n;
+	if ((m = scan_autolink_uri(s->s, s->n, s->pos)) != 0 ||
+	    (m = scan_autolink_email(s->s, s->n, s->pos)) != 0) {
+		int email = s->s[s->pos] == '<' &&
+		            scan_autolink_uri(s->s, s->n, s->pos) == 0;
+		Node *txt = node_new(N_TEXT);
+		n = node_new(N_LINK);
+		clean_autolink(&n->url, s->s + s->pos + 1, m - 2, email);
+		decode_entities_into(&txt->content, s->s + s->pos + 1, m - 2);
+		node_append(n, txt);
+		s->pos += m;
+		return n;
+	}
+	if ((m = scan_html_tag(s->s, s->n, s->pos)) != 0) {
+		n = make_literal(N_HTML_INLINE, s->s + s->pos, m);
+		s->pos += m;
+		return n;
+	}
+	s->pos++;
+	return make_literal(N_TEXT, "<", 1);
+}
+
+/* shortcut: emphasis, links, images, autolinks and raw
  * HTML are added to this switch commit by commit.  See PLAN.md. */
 static int parse_inline(Subject *s, Node *parent) {
 	Node *n = NULL;
@@ -2053,6 +2202,9 @@ static int parse_inline(Subject *s, Node *parent) {
 		break;
 	case '`':
 		n = handle_backticks(s);
+		break;
+	case '<':
+		n = handle_pointy_brace(s);
 		break;
 	default:
 		n = handle_text(s);
@@ -2436,6 +2588,36 @@ static void escape_html(Buf *out, const char *s, size_t n) {
 	bput(out, s + start, n - start);
 }
 
+/* Percent-encoding for URLs, matching the reference implementation's set:
+ * alphanumerics and the reserved characters that are meant to work as URL
+ * components pass through unchanged, on the assumption that a reserved
+ * character inside a URL is there to do its reserved job.  `&` and `'` are
+ * the two exceptions -- they are left in the URL but need HTML entity
+ * escaping to produce valid markup -- and everything else, including every
+ * byte of a multi-byte UTF-8 sequence, becomes %XX. */
+static int href_safe(unsigned char c) {
+	return c != 0 && (c_isalnum(c) ||
+	                  strchr("-_.+!*(),%#@?=;:/$~", (char)c) != NULL);
+}
+
+static void escape_href(Buf *out, const char *s, size_t n) {
+	static const char hex[] = "0123456789ABCDEF";
+	size_t i;
+	for (i = 0; i < n; i++) {
+		unsigned char c = (unsigned char)s[i];
+		if (href_safe(c)) { bputc(out, (char)c); continue; }
+		switch (c) {
+		case '&': bputs(out, "&amp;"); break;
+		case '\'': bputs(out, "&#x27;"); break;
+		case ' ': bputs(out, "%20"); break;
+		default:
+			bputc(out, '%');
+			bputc(out, hex[(c >> 4) & 0xF]);
+			bputc(out, hex[c & 0xF]);
+		}
+	}
+}
+
 static void cr(Buf *out) {
 	if (out->n && out->p[out->n - 1] != '\n') bputc(out, '\n');
 }
@@ -2530,6 +2712,22 @@ static void render(Buf *out, Node *n, int depth) {
 		bputs(out, "<code>");
 		escape_html(out, n->content.p, n->content.n);
 		bputs(out, "</code>");
+		break;
+	case N_HTML_INLINE:
+		bput(out, n->content.p, n->content.n);
+		break;
+	case N_LINK:
+		bputs(out, "<a href=\"");
+		escape_href(out, n->url.p, n->url.n);
+		bputc(out, '"');
+		if (n->title.n) {
+			bputs(out, " title=\"");
+			escape_html(out, n->title.p, n->title.n);
+			bputc(out, '"');
+		}
+		bputc(out, '>');
+		render_children(out, n, depth);
+		bputs(out, "</a>");
 		break;
 	case N_SOFTBREAK:
 		bputc(out, '\n');

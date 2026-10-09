@@ -129,7 +129,7 @@ octal escapes so the source file stays ASCII.
     its own commit so the diff of real code stays readable.
 - [x] code spans
   - why: highest precedence inline, so everything after it must respect it.
-- [ ] autolinks and raw HTML
+- [x] autolinks and raw HTML
   - why: both start at `<`; one dispatch point, two grammars.
 - [ ] links and images
   - why: needs the bracket stack and the reference map from two commits back.

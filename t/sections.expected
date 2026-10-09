@@ -1,5 +1,5 @@
  11/11   Tabs
-  9/13   Backslash escapes
+ 10/13   Backslash escapes
  13/17   Entity and numeric character references
   1/1    Precedence
  18/19   Thematic breaks
@@ -7,21 +7,21 @@
  24/27   Setext headings
  12/12   Indented code blocks
  29/29   Fenced code blocks
- 35/44   HTML blocks
-  9/27   Link reference definitions
+ 36/44   HTML blocks
+ 10/27   Link reference definitions
   8/8    Paragraphs
   1/1    Blank lines
  25/25   Block quotes
  48/48   List items
  26/26   Lists
   1/1    Inlines
- 20/22   Code spans
- 40/132  Emphasis and strong emphasis
- 16/90   Links
+ 22/22   Code spans
+ 45/132  Emphasis and strong emphasis
+ 22/90   Links
   2/22   Images
-  8/19   Autolinks
-  7/20   Raw HTML
- 11/15   Hard line breaks
+ 19/19   Autolinks
+ 20/20   Raw HTML
+ 13/15   Hard line breaks
   2/2    Soft line breaks
   3/3    Textual content
-395/652  TOTAL
+437/652  TOTAL
