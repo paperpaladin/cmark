@@ -302,6 +302,18 @@ static size_t scan_atx_start(Parser *p, size_t i) {
 	return i - start;
 }
 
+/* `[=]+ [ \t]* [\r\n]` is an h1 underline, `[-]+ ...` an h2.  Returns the
+ * level, or 0.  A single `-` is both a valid h2 underline and a valid list
+ * marker, which is why the caller's branch order matters. */
+static int scan_setext(Parser *p, size_t i) {
+	char c = p->line[i];
+	if (c != '=' && c != '-') return 0;
+	while (i < p->len && p->line[i] == c) i++;
+	while (i < p->len && is_space_or_tab(p->line[i])) i++;
+	if (i >= p->len || !is_line_end(p->line[i])) return 0;
+	return c == '=' ? 1 : 2;
+}
+
 /* The ATX closing sequence: `## foo ##` is an h2 holding "foo".  A line of
  * nothing but hashes after the marker is content, not a closing sequence,
  * because the sequence has to be preceded by a space. */
@@ -404,7 +416,7 @@ static Node *check_open_blocks(Parser *p, int *all_matched) {
  * which are still missing. */
 static void open_new_blocks(Parser *p, Node **cont, int all_matched) {
 	size_t matched;
-	(void)all_matched;
+	int lev;
 	while ((*cont)->t != N_CODE && (*cont)->t != N_HTML_BLOCK) {
 		int indented;
 		find_first_nonspace(p);
@@ -417,7 +429,14 @@ static void open_new_blocks(Parser *p, Node **cont, int all_matched) {
 			*cont = add_child(p, *cont, N_HEADING);
 			while (h < p->len && p->line[h] == '#') { level++; h++; }
 			(*cont)->level = level;
-		} else if (!indented && scan_hrule(p, p->fns)) {
+		} else if (!indented && (*cont)->t == N_PARA && all_matched &&
+		           (lev = scan_setext(p, p->fns)) != 0) {
+			(*cont)->t = N_HEADING;
+			(*cont)->level = lev;
+			(*cont)->setext = 1;
+			advance(p, p->len - 1 - p->off, 0);
+		} else if (!indented && !((*cont)->t == N_PARA && !all_matched) &&
+		           scan_hrule(p, p->fns)) {
 			*cont = add_child(p, *cont, N_HRULE);
 			advance(p, p->len - 1 - p->off, 0);
 		} else {

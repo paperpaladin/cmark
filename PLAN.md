@@ -81,7 +81,7 @@ Ranked by how little we control them.
 - [x] thematic breaks and ATX headings
   - why: the two simplest leaf blocks, and they need `open_new_blocks` to
     exist, which everything else then hangs off.
-- [ ] setext headings
+- [x] setext headings
   - why: the first block type that mutates an already-open block, which is
     what forces `all_matched` into the signature.
 - [ ] indented code blocks

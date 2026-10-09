@@ -2,9 +2,9 @@
   1/13   Backslash escapes
   3/17   Entity and numeric character references
   0/1    Precedence
- 13/19   Thematic breaks
+ 14/19   Thematic breaks
  13/18   ATX headings
-  6/27   Setext headings
+ 15/27   Setext headings
   1/12   Indented code blocks
   0/29   Fenced code blocks
   0/44   HTML blocks
@@ -24,4 +24,4 @@
   4/15   Hard line breaks
   1/2    Soft line breaks
   3/3    Textual content
-131/652  TOTAL
+141/652  TOTAL
