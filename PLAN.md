@@ -180,5 +180,5 @@ against 15.0 and the difference touches no example in the suite.
 - [x] the depth limit and `make test-asan`
   - why: the limit is cheap but the test for it is the point, and it can only
     be written once containers and inline brackets both recurse.
-- [ ] README with the per-section table and the shortfalls named
+- [x] README with the per-section table and the shortfalls named
   - why: last, so the numbers in it are the numbers the suite prints.

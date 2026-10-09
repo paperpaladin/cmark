@@ -2146,8 +2146,8 @@ static void chop_hashes(Parser *p) {
 /* A backslash before an ASCII punctuation character is an escape.  Used on
  * code fence info strings, link destinations and link titles, where the
  * escapes are resolved during parsing rather than during inline rendering.
- * shortcut: entity references in those three places are resolved by the same
- * helper once the entity table exists. */
+ * Entity references in those three places go through unescape_buf alongside
+ * these. */
 static int ascii_punct(int c) {
 	return (c >= '!' && c <= '/') || (c >= ':' && c <= '@') ||
 	       (c >= '[' && c <= '`') || (c >= '{' && c <= '~');
@@ -2927,8 +2927,9 @@ static Node *handle_close_bracket(Subject *s) {
 	return NULL;
 }
 
-/* shortcut: emphasis, links, images, autolinks and raw
- * HTML are added to this switch commit by commit.  See PLAN.md. */
+/* One inline per call.  The switch is in no particular order; precedence is
+ * enforced by each handler consuming its own extent, and by process_emphasis
+ * running last over whatever delimiters are left. */
 static int parse_inline(Subject *s, Node *parent) {
 	Node *n = NULL;
 	int c;
@@ -3214,8 +3215,10 @@ static Node *check_open_blocks(Parser *p, int *all_matched) {
 	return cont;
 }
 
-/* shortcut: block starts are added here commit by commit; see PLAN.md for
- * which are still missing. */
+/* Every block start, in the one order that works.  Setext before thematic
+ * break so `---` under a paragraph is an h2; thematic break before list
+ * markers so `* * *` is a break; list markers before indented code so a
+ * marker at column 4 inside an open list still starts an item. */
 static void open_new_blocks(Parser *p, Node **cont, int all_matched) {
 	size_t matched;
 	int lev;
