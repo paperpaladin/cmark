@@ -131,7 +131,7 @@ octal escapes so the source file stays ASCII.
   - why: highest precedence inline, so everything after it must respect it.
 - [x] autolinks and raw HTML
   - why: both start at `<`; one dispatch point, two grammars.
-- [ ] links and images
+- [x] links and images
   - why: needs the bracket stack and the reference map from two commits back.
 - [ ] emphasis
   - why: last, because the delimiter stack has to be able to see link

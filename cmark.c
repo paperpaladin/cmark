@@ -1127,6 +1127,15 @@ static void node_unlink(Node *n) {
 	n->parent = n->prev = n->next = NULL;
 }
 
+static void node_insert_before(Node *at, Node *n) {
+	n->parent = at->parent;
+	n->next = at;
+	n->prev = at->prev;
+	if (at->prev) at->prev->next = n;
+	else if (at->parent) at->parent->first = n;
+	at->prev = n;
+}
+
 static int accepts_lines(Type t) {
 	return t == N_PARA || t == N_HEADING || t == N_CODE || t == N_HTML_BLOCK;
 }
@@ -2017,17 +2026,48 @@ static size_t parse_reference(RefMap *refs, const char *s, size_t n) {
 
 /* The subject of inline parsing: one block's accumulated text, a cursor, and
  * the stacks that emphasis and links need. */
+/* An unresolved `[` or `![`.  The stack exists because a link's extent is
+ * only known when its `]` is found, and the text in between has already been
+ * parsed into nodes by then. */
+typedef struct Bracket Bracket;
+struct Bracket {
+	Bracket *prev;
+	Node *inl_text;		/* the literal "[" node, replaced on a match */
+	size_t position;	/* just after the bracket */
+	int image, active, bracket_after;
+};
+
 typedef struct {
 	const char *s;
 	size_t n, pos;
 	RefMap *refs;
+	Bracket *last_bracket;
 } Subject;
+
+static void push_bracket(Subject *s, int image, Node *inl_text) {
+	Bracket *b = xcalloc(sizeof *b);
+	if (s->last_bracket) s->last_bracket->bracket_after = 1;
+	b->image = image;
+	b->active = 1;
+	b->inl_text = inl_text;
+	b->position = s->pos;
+	b->prev = s->last_bracket;
+	s->last_bracket = b;
+}
+
+static void pop_bracket(Subject *s) {
+	Bracket *b = s->last_bracket;
+	if (!b) return;
+	s->last_bracket = b->prev;
+	free(b);
+}
 
 /* The characters that can start something other than plain text.  Everything
  * else is swallowed in runs by handle_text. */
 static int is_special(int c) {
 	switch (c) {
 	case '\n': case '\r': case '\\': case '&': case '`': case '<':
+	case '[': case ']': case '!':
 		return 1;
 	default:
 		return 0;
@@ -2182,6 +2222,121 @@ static Node *handle_pointy_brace(Subject *s) {
 	return make_literal(N_TEXT, "<", 1);
 }
 
+/* shortcut: emphasis is added in the next commit, which is where the
+ * delimiter stack and the real process_emphasis arrive. */
+static void process_emphasis(Subject *s) { (void)s; }
+
+/* `]` closes the nearest active `[` or `![`, if what follows makes a link:
+ * an inline `(dest "title")`, a `[label]` in the reference map, a collapsed
+ * `[]`, or nothing at all (shortcut reference).  Otherwise the `]` is
+ * literal text and the opener is discarded. */
+static Node *handle_close_bracket(Subject *s) {
+	size_t initial;
+	Bracket *opener;
+	Node *inl, *tmp, *tmpnext;
+	Buf url = {0}, title = {0};
+	int is_image, matched = 0;
+
+	s->pos++;
+	initial = s->pos;
+	opener = s->last_bracket;
+	if (!opener) return make_literal(N_TEXT, "]", 1);
+	if (!opener->active) {
+		pop_bracket(s);
+		return make_literal(N_TEXT, "]", 1);
+	}
+	is_image = opener->image;
+
+	/* An inline link: ( destination title? ) */
+	if (s->pos < s->n && s->s[s->pos] == '(') {
+		size_t ds = 0, dl = 0, ts = 0, tl = 0;
+		size_t sps = s->pos + 1, endurl, starttitle, endtitle, endall;
+		long r;
+		while (sps < s->n && c_isspace((unsigned char)s->s[sps])) sps++;
+		r = scan_link_dest(s->s, s->n, sps, &ds, &dl);
+		if (r >= 0) {
+			endurl = sps + (size_t)r;
+			starttitle = endurl;
+			while (starttitle < s->n &&
+			       c_isspace((unsigned char)s->s[starttitle]))
+				starttitle++;
+			endtitle = starttitle;
+			if (starttitle != endurl) {
+				long t = scan_link_title(s->s, s->n, starttitle, &ts, &tl);
+				if (t > 0) endtitle = starttitle + (size_t)t;
+			}
+			endall = endtitle;
+			while (endall < s->n && c_isspace((unsigned char)s->s[endall]))
+				endall++;
+			if (endall < s->n && s->s[endall] == ')') {
+				s->pos = endall + 1;
+				clean_url(&url, s->s + ds, dl);
+				if (endtitle != starttitle)
+					clean_title(&title, s->s + ts, tl);
+				matched = 1;
+			}
+		}
+	}
+
+	/* A reference link: [label], [] or nothing. */
+	if (!matched) {
+		size_t ls = 0, ll = 0, m;
+		int found_label;
+		Ref *ref = NULL;
+		m = scan_link_label(s->s, s->n, s->pos, &ls, &ll);
+		found_label = m != 0;
+		if (found_label) s->pos += m;
+		if ((!found_label || ll == 0) && !opener->bracket_after) {
+			ls = opener->position;
+			ll = initial - 1 - opener->position;
+			found_label = 1;
+		}
+		if (found_label) ref = ref_find(s->refs, s->s + ls, ll);
+		if (ref) {
+			bput(&url, ref->url.p, ref->url.n);
+			bput(&title, ref->title.p, ref->title.n);
+			matched = 1;
+		}
+	}
+
+	if (!matched) {
+		bfree(&url);
+		bfree(&title);
+		pop_bracket(s);
+		s->pos = initial;
+		return make_literal(N_TEXT, "]", 1);
+	}
+
+	inl = node_new(is_image ? N_IMAGE : N_LINK);
+	inl->url = url;
+	inl->title = title;
+	node_insert_before(opener->inl_text, inl);
+	for (tmp = opener->inl_text->next; tmp; tmp = tmpnext) {
+		tmpnext = tmp->next;
+		node_unlink(tmp);
+		node_append(inl, tmp);
+	}
+	node_unlink(opener->inl_text);
+	node_free(opener->inl_text);
+	process_emphasis(s);
+	pop_bracket(s);
+
+	/* Links do not nest: once one is made, every earlier link opener is
+	 * deactivated.  Image openers are left alone, because a link may sit
+	 * inside an image's alt text. */
+	if (!is_image) {
+		Bracket *b = s->last_bracket;
+		while (b) {
+			if (!b->image) {
+				if (!b->active) break;
+				b->active = 0;
+			}
+			b = b->prev;
+		}
+	}
+	return NULL;
+}
+
 /* shortcut: emphasis, links, images, autolinks and raw
  * HTML are added to this switch commit by commit.  See PLAN.md. */
 static int parse_inline(Subject *s, Node *parent) {
@@ -2206,6 +2361,26 @@ static int parse_inline(Subject *s, Node *parent) {
 	case '<':
 		n = handle_pointy_brace(s);
 		break;
+	case '[':
+		s->pos++;
+		n = make_literal(N_TEXT, "[", 1);
+		node_append(parent, n);
+		push_bracket(s, 0, n);
+		return 1;
+	case ']':
+		n = handle_close_bracket(s);
+		break;
+	case '!':
+		s->pos++;
+		if (s->pos < s->n && s->s[s->pos] == '[') {
+			s->pos++;
+			n = make_literal(N_TEXT, "![", 2);
+			node_append(parent, n);
+			push_bracket(s, 1, n);
+			return 1;
+		}
+		n = make_literal(N_TEXT, "!", 1);
+		break;
 	default:
 		n = handle_text(s);
 		break;
@@ -2223,6 +2398,8 @@ static void parse_inlines(Node *parent, RefMap *refs) {
 	while (s.n > 0 && c_isspace((unsigned char)s.s[s.n - 1])) s.n--;
 	while (parse_inline(&s, parent))
 		;
+	process_emphasis(&s);
+	while (s.last_bracket) pop_bracket(&s);
 }
 
 /* --------------------------------------------------------------- finalize */
@@ -2624,6 +2801,29 @@ static void cr(Buf *out) {
 
 static void render(Buf *out, Node *n, int depth);
 
+/* An image's alt text is the plain text of its children: tags dropped, code
+ * kept as its literal, any break collapsed to a space. */
+static void render_plain(Buf *out, Node *n, int depth) {
+	Node *c;
+	if (depth > MAX_DEPTH) return;
+	for (c = n->first; c; c = c->next) {
+		switch (c->t) {
+		case N_TEXT:
+		case N_CODESPAN:
+		case N_HTML_INLINE:
+			escape_html(out, c->content.p, c->content.n);
+			break;
+		case N_SOFTBREAK:
+		case N_LINEBREAK:
+			bputc(out, ' ');
+			break;
+		default:
+			render_plain(out, c, depth + 1);
+			break;
+		}
+	}
+}
+
 static void render_children(Buf *out, Node *n, int depth) {
 	Node *c;
 	for (c = n->first; c; c = c->next) render(out, c, depth + 1);
@@ -2728,6 +2928,19 @@ static void render(Buf *out, Node *n, int depth) {
 		bputc(out, '>');
 		render_children(out, n, depth);
 		bputs(out, "</a>");
+		break;
+	case N_IMAGE:
+		bputs(out, "<img src=\"");
+		escape_href(out, n->url.p, n->url.n);
+		bputs(out, "\" alt=\"");
+		render_plain(out, n, depth);
+		bputc(out, '"');
+		if (n->title.n) {
+			bputs(out, " title=\"");
+			escape_html(out, n->title.p, n->title.n);
+			bputc(out, '"');
+		}
+		bputs(out, " />");
 		break;
 	case N_SOFTBREAK:
 		bputc(out, '\n');
