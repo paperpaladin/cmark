@@ -8,12 +8,12 @@
  12/12   Indented code blocks
  26/29   Fenced code blocks
  35/44   HTML blocks
-  6/27   Link reference definitions
+  9/27   Link reference definitions
   7/8    Paragraphs
   1/1    Blank lines
  24/25   Block quotes
  47/48   List items
- 24/26   Lists
+ 25/26   Lists
   0/1    Inlines
   2/22   Code spans
  40/132  Emphasis and strong emphasis
@@ -24,4 +24,4 @@
   4/15   Hard line breaks
   1/2    Soft line breaks
   3/3    Textual content
-333/652  TOTAL
+337/652  TOTAL

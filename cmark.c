@@ -109,6 +109,70 @@ static int ci_eq(const char *a, const char *b, size_t n) {
 static int is_line_end(int c) { return c == '\n' || c == '\r'; }
 #define c_isspace c_isspace_fwd
 
+/* ------------------------------------------------------------------- UTF-8 */
+
+/* Decodes one codepoint.  Any ill-formed byte is reported as U+FFFD and
+ * consumed singly, which keeps the scanners advancing on arbitrary bytes. */
+static int utf8_decode(const char *s, size_t n, size_t i, int32_t *cp) {
+	unsigned char c = (unsigned char)s[i];
+	int len, j;
+	int32_t v;
+	if (c < 0x80) { *cp = c; return 1; }
+	if ((c & 0xE0) == 0xC0) { len = 2; v = c & 0x1F; }
+	else if ((c & 0xF0) == 0xE0) { len = 3; v = c & 0x0F; }
+	else if ((c & 0xF8) == 0xF0) { len = 4; v = c & 0x07; }
+	else { *cp = 0xFFFD; return 1; }
+	if (i + (size_t)len > n) { *cp = 0xFFFD; return 1; }
+	for (j = 1; j < len; j++) {
+		if (((unsigned char)s[i + j] & 0xC0) != 0x80) { *cp = 0xFFFD; return 1; }
+		v = (v << 6) | ((unsigned char)s[i + j] & 0x3F);
+	}
+	*cp = v;
+	return len;
+}
+
+static void utf8_encode(Buf *b, int32_t cp) {
+	if (cp < 0 || cp > 0x10FFFF) cp = 0xFFFD;
+	if (cp < 0x80) {
+		bputc(b, (char)cp);
+	} else if (cp < 0x800) {
+		bputc(b, (char)(0xC0 | (cp >> 6)));
+		bputc(b, (char)(0x80 | (cp & 0x3F)));
+	} else if (cp < 0x10000) {
+		bputc(b, (char)(0xE0 | (cp >> 12)));
+		bputc(b, (char)(0x80 | ((cp >> 6) & 0x3F)));
+		bputc(b, (char)(0x80 | (cp & 0x3F)));
+	} else {
+		bputc(b, (char)(0xF0 | (cp >> 18)));
+		bputc(b, (char)(0x80 | ((cp >> 12) & 0x3F)));
+		bputc(b, (char)(0x80 | ((cp >> 6) & 0x3F)));
+		bputc(b, (char)(0x80 | (cp & 0x3F)));
+	}
+}
+
+/* shortcut: case folding for link labels covers ASCII, Latin-1 Supplement,
+ * Latin Extended-A, Greek and Cyrillic -- the alphabets the spec suite uses.
+ * Full Unicode case folding needs the CaseFolding.txt table (and the
+ * multi-character foldings: SS -> ss, 1E9E -> 00DF), which is a few thousand
+ * entries of generated data for a handful of real labels.  Upgrade path: the
+ * same generated-table trick the entity list uses. */
+static int32_t fold_cp(int32_t c) {
+	if (c >= 'A' && c <= 'Z') return c + 32;
+	if (c >= 0x00C0 && c <= 0x00DE && c != 0x00D7) return c + 0x20;
+	if (c == 0x0178) return 0x00FF;
+	if (c >= 0x0100 && c <= 0x0177) return (c % 2 == 0) ? c + 1 : c;
+	if (c >= 0x0179 && c <= 0x017E) return (c % 2 == 1) ? c + 1 : c;
+	if (c >= 0x0391 && c <= 0x03A9 && c != 0x03A2) return c + 0x20;
+	if (c == 0x0386) return 0x03AC;
+	if (c >= 0x0388 && c <= 0x038A) return c + 0x25;
+	if (c == 0x038C) return 0x03CC;
+	if (c == 0x038E) return 0x03CD;
+	if (c == 0x038F) return 0x03CE;
+	if (c >= 0x0400 && c <= 0x040F) return c + 0x50;
+	if (c >= 0x0410 && c <= 0x042F) return c + 0x20;
+	return c;
+}
+
 /* ------------------------------------------------------------------- nodes */
 
 typedef enum {
@@ -212,11 +276,95 @@ static int can_contain(Type parent, Type child) {
 	}
 }
 
+/* --------------------------------------------------------- reference map */
+
+/* Link reference definitions.  Labels are normalised: outer whitespace
+ * trimmed, interior whitespace runs collapsed to one space, case folded.
+ * The first definition of a label wins.
+ * shortcut: linear lookup.  Fine for documents; a sorted array or a hash
+ * would matter only for a document with thousands of definitions. */
+typedef struct {
+	Buf label, url, title;
+} Ref;
+
+typedef struct {
+	Ref *v;
+	size_t n, cap;
+} RefMap;
+
+static void normalize_label(Buf *out, const char *s, size_t n) {
+	size_t i = 0;
+	int pending_ws = 0, seen = 0;
+	while (n > 0 && c_isspace((unsigned char)s[n - 1])) n--;
+	while (i < n && c_isspace((unsigned char)s[i])) i++;
+	while (i < n) {
+		int32_t cp;
+		int len = utf8_decode(s, n, i, &cp);
+		if (c_isspace(cp)) {
+			pending_ws = 1;
+		} else {
+			if (pending_ws && seen) bputc(out, ' ');
+			pending_ws = 0;
+			seen = 1;
+			utf8_encode(out, fold_cp(cp));
+		}
+		i += (size_t)len;
+	}
+}
+
+static Ref *ref_find(RefMap *m, const char *s, size_t n) {
+	Buf key = {0};
+	size_t i;
+	Ref *hit = NULL;
+	normalize_label(&key, s, n);
+	for (i = 0; i < m->n; i++)
+		if (m->v[i].label.n == key.n &&
+		    memcmp(m->v[i].label.p, key.p, key.n) == 0) {
+			hit = &m->v[i];
+			break;
+		}
+	bfree(&key);
+	return hit;
+}
+
+static void ref_add(RefMap *m, const char *lab, size_t lablen, Buf *url,
+                    Buf *title) {
+	Ref *r;
+	if (ref_find(m, lab, lablen)) {	/* first definition wins */
+		bfree(url);
+		bfree(title);
+		return;
+	}
+	if (m->n == m->cap) {
+		m->cap = m->cap ? m->cap * 2 : 8;
+		m->v = realloc(m->v, m->cap * sizeof *m->v);
+		if (!m->v) oom();
+	}
+	r = &m->v[m->n++];
+	memset(r, 0, sizeof *r);
+	normalize_label(&r->label, lab, lablen);
+	r->url = *url;
+	r->title = *title;
+}
+
+static void refmap_free(RefMap *m) {
+	size_t i;
+	for (i = 0; i < m->n; i++) {
+		bfree(&m->v[i].label);
+		bfree(&m->v[i].url);
+		bfree(&m->v[i].title);
+	}
+	free(m->v);
+	m->v = NULL;
+	m->n = m->cap = 0;
+}
+
 /* ------------------------------------------------------------ parser state */
 
 typedef struct {
 	Node *doc;
 	Node *cur;		/* deepest open block */
+	RefMap refs;
 	const char *line;	/* current line, newline-terminated */
 	size_t len;
 	size_t off, col;	/* cursor: byte offset and display column */
@@ -665,6 +813,195 @@ static void unescape_backslashes(Buf *b) {
 	if (b->p) b->p[b->n] = 0;
 }
 
+/* ------------------------------------------------- link syntax (shared) */
+
+/* `[` ... `]` with backslash escapes and no nested unescaped brackets.  The
+ * spec caps the label at 999 characters.  Returns the length including both
+ * brackets, or 0. */
+#define MAX_LABEL 999
+
+static size_t scan_link_label(const char *s, size_t n, size_t i, size_t *ls,
+                              size_t *ll) {
+	size_t j = i + 1;
+	size_t len = 0;
+	if (i >= n || s[i] != '[') return 0;
+	while (j < n) {
+		char c = s[j];
+		if (c == '\\') {
+			j++;
+			len++;
+			if (j < n && ascii_punct((unsigned char)s[j])) { j++; len++; }
+		} else if (c == '[') {
+			return 0;
+		} else if (c == ']') {
+			break;
+		} else {
+			j++;
+			len++;
+		}
+		if (len > MAX_LABEL) return 0;
+	}
+	if (j >= n || s[j] != ']') return 0;
+	*ls = i + 1;
+	*ll = j - (i + 1);
+	return j + 1 - i;
+}
+
+/* A link destination: either `<...>` or a bare run with balanced parentheses
+ * and no ASCII space or control character.  Returns the consumed length (which
+ * may be 0, for `()` and `<>`), or -1 for no match. */
+static long scan_link_dest(const char *s, size_t n, size_t i, size_t *ds,
+                           size_t *dl) {
+	size_t j;
+	int depth = 0;
+	if (i < n && s[i] == '<') {
+		for (j = i + 1; j < n; j++) {
+			if (s[j] == '>') {
+				*ds = i + 1;
+				*dl = j - (i + 1);
+				return (long)(j + 1 - i);
+			}
+			if (s[j] == '\\' && j + 1 < n &&
+			    ascii_punct((unsigned char)s[j + 1])) {
+				j++;
+				continue;
+			}
+			if (s[j] == '\n' || s[j] == '<') return -1;
+		}
+		return -1;
+	}
+	for (j = i; j < n; j++) {
+		unsigned char c = (unsigned char)s[j];
+		if (c == '\\' && j + 1 < n && ascii_punct((unsigned char)s[j + 1])) {
+			j++;
+			continue;
+		}
+		if (c == '(') {
+			if (++depth > 32) return -1;
+			continue;
+		}
+		if (c == ')') {
+			if (depth == 0) break;
+			depth--;
+			continue;
+		}
+		if (c <= 32 || c == 127) {
+			if (j == i) return -1;
+			break;
+		}
+	}
+	if (j >= n || depth != 0) return -1;
+	*ds = i;
+	*dl = j - i;
+	return (long)(j - i);
+}
+
+/* A link title in double quotes, single quotes or parentheses.  The quotes
+ * are included in the returned span; clean_title strips them. */
+static long scan_link_title(const char *s, size_t n, size_t i, size_t *ts,
+                            size_t *tl) {
+	char open, close;
+	size_t j;
+	if (i >= n) return -1;
+	open = s[i];
+	if (open == '"') close = '"';
+	else if (open == '\'') close = '\'';
+	else if (open == '(') close = ')';
+	else return -1;
+	for (j = i + 1; j < n; j++) {
+		if (s[j] == '\\' && j + 1 < n && ascii_punct((unsigned char)s[j + 1])) {
+			j++;
+			continue;
+		}
+		if (open == '(' && s[j] == '(') return -1;
+		if (s[j] == close) {
+			*ts = i;
+			*tl = j + 1 - i;
+			return (long)(j + 1 - i);
+		}
+	}
+	return -1;
+}
+
+/* Spaces and tabs, then at most one line ending, then spaces and tabs. */
+static size_t spnl(const char *s, size_t n, size_t i) {
+	while (i < n && is_space_or_tab(s[i])) i++;
+	if (i < n && s[i] == '\r') { i++; if (i < n && s[i] == '\n') i++; }
+	else if (i < n && s[i] == '\n') i++;
+	else return i;
+	while (i < n && is_space_or_tab(s[i])) i++;
+	return i;
+}
+
+/* shortcut: entity references in destinations and titles are resolved by
+ * unescape_buf once the entity table exists; for now only backslashes. */
+static void unescape_buf(Buf *b) { unescape_backslashes(b); }
+
+static void clean_url(Buf *out, const char *s, size_t n) {
+	bput(out, s, n);
+	btrim(out);
+	unescape_buf(out);
+}
+
+static void clean_title(Buf *out, const char *s, size_t n) {
+	if (n >= 2 && ((s[0] == '"' && s[n - 1] == '"') ||
+	               (s[0] == '\'' && s[n - 1] == '\'') ||
+	               (s[0] == '(' && s[n - 1] == ')')))
+		bput(out, s + 1, n - 2);
+	else
+		bput(out, s, n);
+	unescape_buf(out);
+}
+
+/* `[label]: destination "title"` at the start of a paragraph's content.
+ * Returns the number of bytes consumed, or 0.  A definition may be followed
+ * by another, which is why finalize loops. */
+static size_t parse_reference(RefMap *refs, const char *s, size_t n) {
+	size_t i, ls = 0, ll = 0, ds = 0, dl = 0, ts = 0, tl = 0, before;
+	size_t m;
+	long r;
+	Buf url = {0}, title = {0}, key = {0};
+	int have_title = 0;
+
+	m = scan_link_label(s, n, 0, &ls, &ll);
+	if (!m) return 0;
+	normalize_label(&key, s + ls, ll);
+	if (key.n == 0) { bfree(&key); return 0; }
+	bfree(&key);
+	i = m;
+	if (i >= n || s[i] != ':') return 0;
+	i++;
+	i = spnl(s, n, i);
+	r = scan_link_dest(s, n, i, &ds, &dl);
+	if (r < 0) return 0;
+	i += (size_t)r;
+
+	before = i;
+	i = spnl(s, n, i);
+	if (i != before) {
+		r = scan_link_title(s, n, i, &ts, &tl);
+		if (r > 0) { i += (size_t)r; have_title = 1; }
+		else i = before;
+	}
+	while (i < n && is_space_or_tab(s[i])) i++;
+	if (!(i >= n || is_line_end(s[i]))) {
+		if (!have_title) return 0;
+		/* A trailing title that does not end the line is not a title; try
+		 * again with the destination alone. */
+		i = before;
+		have_title = 0;
+		while (i < n && is_space_or_tab(s[i])) i++;
+		if (!(i >= n || is_line_end(s[i]))) return 0;
+	}
+	if (i < n && s[i] == '\r') i++;
+	if (i < n && s[i] == '\n') i++;
+
+	clean_url(&url, s + ds, dl);
+	if (have_title) clean_title(&title, s + ts, tl);
+	ref_add(refs, s + ls, ll, &url, &title);
+	return i;
+}
+
 /* ------------------------------------------------------- inline parsing */
 
 static void rtrim_buf(Buf *b) {
@@ -729,9 +1066,15 @@ static void set_list_tight(Node *list) {
 	}
 }
 
+static int buf_is_blank(Buf *b) {
+	size_t i;
+	for (i = 0; i < b->n; i++)
+		if (!c_isspace((unsigned char)b->p[i])) return 0;
+	return 1;
+}
+
 static Node *finalize(Parser *p, Node *b) {
 	Node *parent = b->parent;
-	(void)p;
 	b->open = 0;
 	switch (b->t) {
 	case N_CODE:
@@ -755,13 +1098,27 @@ static Node *finalize(Parser *p, Node *b) {
 	case N_LIST:
 		set_list_tight(b);
 		break;
-	case N_PARA:
-		if (b->content.n == 0) {
+	case N_PARA: {
+		/* Leading link reference definitions are stripped out here, not in
+		 * the inline pass, because a definition may be referenced by text
+		 * that appears earlier in the document. */
+		size_t off = 0, m;
+		while (off < b->content.n && b->content.p[off] == '[' &&
+		       (m = parse_reference(&p->refs, b->content.p + off,
+		                            b->content.n - off)) != 0)
+			off += m;
+		if (off) {
+			memmove(b->content.p, b->content.p + off, b->content.n - off);
+			b->content.n -= off;
+			b->content.p[b->content.n] = 0;
+		}
+		if (buf_is_blank(&b->content)) {
 			node_unlink(b);
 			node_free(b);
 			return parent;
 		}
 		break;
+	}
 	default:
 		break;
 	}
@@ -1170,6 +1527,7 @@ static int run(const char *src, size_t srclen, Buf *out) {
 		render(out, p.doc, 0);
 	}
 	node_free(p.doc);
+	refmap_free(&p.refs);
 	bfree(&text);
 	return rc;
 }
