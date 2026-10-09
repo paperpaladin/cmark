@@ -72,6 +72,7 @@ static void bfree(Buf *b) {
 
 /* ------------------------------------------------------- character classes */
 
+static int is_space_or_tab(int c) { return c == ' ' || c == '\t'; }
 static int is_line_end(int c) { return c == '\n' || c == '\r'; }
 static int c_isspace(int c) {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' ||
@@ -161,6 +162,25 @@ static int accepts_lines(Type t) {
 	return t == N_PARA || t == N_HEADING || t == N_CODE || t == N_HTML_BLOCK;
 }
 
+static int is_block(Type t) { return t <= N_HRULE; }
+
+/* Which blocks may hold which.  This is what makes `add_child` able to close
+ * an open paragraph on its own: it walks up until it finds a parent that can
+ * take the new block. */
+static int can_contain(Type parent, Type child) {
+	if (!is_block(child) || child == N_DOC) return 0;
+	switch (parent) {
+	case N_DOC:
+	case N_BQUOTE:
+	case N_ITEM:
+		return child != N_ITEM;
+	case N_LIST:
+		return child == N_ITEM;
+	default:
+		return 0;
+	}
+}
+
 /* ------------------------------------------------------------ parser state */
 
 typedef struct {
@@ -174,9 +194,10 @@ typedef struct {
 	int indent;		/* columns of indentation at fns */
 	int blank;
 	int partial_tab;
-	int depth;		/* open container nesting */
 	int too_deep;
 } Parser;
+
+static Node *finalize(Parser *p, Node *b);
 
 /* cmark's S_advance_offset.  `columns` means "advance this many display
  * columns", which can stop halfway through a tab; the leftover is recorded in
@@ -230,16 +251,72 @@ static void add_line(Parser *p, Node *n) {
 	if (p->off < p->len) bput(&n->content, p->line + p->off, p->len - p->off);
 }
 
+static int node_depth(Node *n) {
+	int d = 0;
+	for (; n; n = n->parent)
+		if (++d > MAX_DEPTH) break;
+	return d;
+}
+
 static Node *add_child(Parser *p, Node *parent, Type t) {
 	Node *child;
-	if (p->depth >= MAX_DEPTH) {
+	while (!can_contain(parent->t, t)) parent = finalize(p, parent);
+	if (node_depth(parent) >= MAX_DEPTH) {
 		p->too_deep = 1;
 		return parent;
 	}
 	child = node_new(t);
 	node_append(parent, child);
-	p->depth++;
 	return child;
+}
+
+/* ---------------------------------------------------------------- scanners */
+
+/* `([*] | [_] | [-]) ([ \t]* same)* [\r\n]` with at least three of the
+ * character.  Returns 1 on a match; a thematic break is the whole line. */
+static int scan_hrule(Parser *p, size_t i) {
+	char c = p->line[i];
+	int count = 0;
+	if (c != '*' && c != '-' && c != '_') return 0;
+	for (; i < p->len; i++) {
+		char ch = p->line[i];
+		if (ch == c) count++;
+		else if (is_space_or_tab(ch)) continue;
+		else if (is_line_end(ch)) break;
+		else return 0;
+	}
+	return count >= 3;
+}
+
+/* `[#]{1,6} ([ \t]+ | [\r\n])`.  Returns the length matched, including the
+ * spaces that separate the marker from the content, so the caller can skip
+ * straight to the heading text. */
+static size_t scan_atx_start(Parser *p, size_t i) {
+	size_t start = i;
+	int hashes = 0;
+	while (i < p->len && p->line[i] == '#' && hashes < 7) { hashes++; i++; }
+	if (hashes < 1 || hashes > 6) return 0;
+	if (i < p->len && is_line_end(p->line[i])) return i + 1 - start;
+	if (i >= p->len || !is_space_or_tab(p->line[i])) return 0;
+	while (i < p->len && is_space_or_tab(p->line[i])) i++;
+	return i - start;
+}
+
+/* The ATX closing sequence: `## foo ##` is an h2 holding "foo".  A line of
+ * nothing but hashes after the marker is content, not a closing sequence,
+ * because the sequence has to be preceded by a space. */
+static void chop_hashes(Parser *p) {
+	size_t e;
+	while (p->len > p->off && c_isspace((unsigned char)p->line[p->len - 1]))
+		p->len--;
+	e = p->len;
+	while (e > p->off && p->line[e - 1] == '#') e--;
+	if (e != p->len && e > p->off &&
+	    is_space_or_tab((unsigned char)p->line[e - 1])) {
+		p->len = e;
+		while (p->len > p->off && c_isspace((unsigned char)p->line[p->len - 1]))
+			p->len--;
+	}
 }
 
 /* ------------------------------------------------------- inline parsing */
@@ -323,12 +400,32 @@ static Node *check_open_blocks(Parser *p, int *all_matched) {
 	return cont;
 }
 
-/* shortcut: only the paragraph fallback in add_text_to_container exists yet;
- * every block start is added here commit by commit.  See PLAN.md. */
+/* shortcut: block starts are added here commit by commit; see PLAN.md for
+ * which are still missing. */
 static void open_new_blocks(Parser *p, Node **cont, int all_matched) {
-	(void)p;
-	(void)cont;
+	size_t matched;
 	(void)all_matched;
+	while ((*cont)->t != N_CODE && (*cont)->t != N_HTML_BLOCK) {
+		int indented;
+		find_first_nonspace(p);
+		indented = p->indent >= CODE_INDENT;
+
+		if (!indented && (matched = scan_atx_start(p, p->fns)) != 0) {
+			size_t h = p->fns;
+			int level = 0;
+			advance(p, p->fns + matched - p->off, 0);
+			*cont = add_child(p, *cont, N_HEADING);
+			while (h < p->len && p->line[h] == '#') { level++; h++; }
+			(*cont)->level = level;
+		} else if (!indented && scan_hrule(p, p->fns)) {
+			*cont = add_child(p, *cont, N_HRULE);
+			advance(p, p->len - 1 - p->off, 0);
+		} else {
+			break;
+		}
+		if (p->too_deep) return;
+		if (accepts_lines((*cont)->t)) break;
+	}
 }
 
 static void add_text_to_container(Parser *p, Node *cont, Node *last_matched) {
@@ -354,6 +451,7 @@ static void add_text_to_container(Parser *p, Node *cont, Node *last_matched) {
 	} else if (p->blank) {
 		/* nothing to add */
 	} else if (accepts_lines(cont->t)) {
+		if (cont->t == N_HEADING && !cont->setext) chop_hashes(p);
 		advance(p, p->fns - p->off, 0);
 		add_line(p, cont);
 	} else {
@@ -426,6 +524,20 @@ static void render(Buf *out, Node *n, int depth) {
 		bputs(out, "<p>");
 		render_children(out, n, depth);
 		bputs(out, "</p>\n");
+		break;
+	case N_HEADING: {
+		char tag[8];
+		cr(out);
+		snprintf(tag, sizeof tag, "<h%d>", n->level);
+		bputs(out, tag);
+		render_children(out, n, depth);
+		snprintf(tag, sizeof tag, "</h%d>\n", n->level);
+		bputs(out, tag);
+		break;
+	}
+	case N_HRULE:
+		cr(out);
+		bputs(out, "<hr />\n");
 		break;
 	case N_TEXT:
 		escape_html(out, n->content.p, n->content.n);

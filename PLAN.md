@@ -78,7 +78,7 @@ Ranked by how little we control them.
 - [x] line reader, paragraphs, HTML escaping, the spec runner, the pin
   - why: the harness comes first.  104/652 falls out of "every paragraph is a
     paragraph", and that number is the baseline every later commit moves.
-- [ ] thematic breaks and ATX headings
+- [x] thematic breaks and ATX headings
   - why: the two simplest leaf blocks, and they need `open_new_blocks` to
     exist, which everything else then hangs off.
 - [ ] setext headings
