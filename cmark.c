@@ -487,6 +487,15 @@ static Node *check_open_blocks(Parser *p, int *all_matched) {
 		cont = cont->last;
 		find_first_nonspace(p);
 		switch (cont->t) {
+		case N_BQUOTE:
+			if (p->indent <= 3 && p->fns < p->len && p->line[p->fns] == '>') {
+				advance(p, p->fns + 1 - p->off, 0);
+				if (p->off < p->len && is_space_or_tab(p->line[p->off]))
+					advance(p, 1, 1);
+			} else {
+				return cont->parent;
+			}
+			break;
 		case N_CODE:
 			if (!cont->fenced) {
 				if (p->indent >= CODE_INDENT) advance(p, CODE_INDENT, 1);
@@ -533,7 +542,12 @@ static void open_new_blocks(Parser *p, Node **cont, int all_matched) {
 		find_first_nonspace(p);
 		indented = p->indent >= CODE_INDENT;
 
-		if (!indented && (matched = scan_atx_start(p, p->fns)) != 0) {
+		if (!indented && p->fns < p->len && p->line[p->fns] == '>') {
+			advance(p, p->fns + 1 - p->off, 0);
+			if (p->off < p->len && is_space_or_tab(p->line[p->off]))
+				advance(p, 1, 1);
+			*cont = add_child(p, *cont, N_BQUOTE);
+		} else if (!indented && (matched = scan_atx_start(p, p->fns)) != 0) {
 			size_t h = p->fns;
 			int level = 0;
 			advance(p, p->fns + matched - p->off, 0);
@@ -679,6 +693,13 @@ static void render(Buf *out, Node *n, int depth) {
 		bputs(out, tag);
 		break;
 	}
+	case N_BQUOTE:
+		cr(out);
+		bputs(out, "<blockquote>\n");
+		render_children(out, n, depth);
+		cr(out);
+		bputs(out, "</blockquote>\n");
+		break;
 	case N_HRULE:
 		cr(out);
 		bputs(out, "<hr />\n");

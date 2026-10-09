@@ -90,7 +90,7 @@ Ranked by how little we control them.
 - [x] fenced code blocks
   - why: the first block with a close condition of its own and an info string
     that needs entity and backslash unescaping.
-- [ ] block quotes
+- [x] block quotes
   - why: the first real container, and the first place lazy continuation can
     be observed.
 - [ ] lists, bullet and ordered
