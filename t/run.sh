@@ -34,6 +34,9 @@ if [ "$(./cmark "$SCRATCH/f.md")" = '<p>hi</p>' ]; then
 else
 	nok "named file argument"
 fi
+# $SCRATCH is never cleared between runs, so "does not exist" has to be made
+# true rather than assumed.
+rm -f "$SCRATCH/does-not-exist.md"
 if ./cmark "$SCRATCH/does-not-exist.md" >/dev/null 2>&1; then
 	nok "missing file is an error"
 else
@@ -111,8 +114,19 @@ else nok "ill-formed UTF-8 input"; fi
 # pinned in t/sections.expected and diffed, so a regression in any one section
 # is a test failure even if the total happens to stay level.
 printf '\n--- CommonMark 0.31.2 spec suite (t/commonmark-spec-0.31.2.json.gz)\n'
-if python3 t/spec.py ./cmark t/commonmark-spec-0.31.2.json.gz "$SCRATCH" \
-	| tee -a "$OUT"; then
+# `if python3 ... | tee; then` tested tee's exit status, not spec.py's, and tee
+# all but always succeeds. So a spec.py that died took the true branch, and
+# since $SCRATCH is a fixed directory that is never cleared, the pin below
+# diffed the *previous* run's sections.txt and passed. A spec.py crashing on
+# import scored "ok - per-section score matches t/sections.expected" with the
+# whole 652-example spec suite not run. Take the status from spec.py itself,
+# and delete the file first so a stale one cannot stand in for a fresh one.
+rm -f "$SCRATCH/sections.txt"
+python3 t/spec.py ./cmark t/commonmark-spec-0.31.2.json.gz "$SCRATCH" \
+	> "$SCRATCH/spec.out" 2>&1
+specrc=$?
+cat "$SCRATCH/spec.out" | tee -a "$OUT"
+if [ "$specrc" -eq 0 ] && [ -f "$SCRATCH/sections.txt" ]; then
 	cat "$SCRATCH/sections.txt"
 	if [ ! -f t/sections.expected ]; then
 		nok "t/sections.expected missing (cp scratch/sections.txt t/)"
@@ -123,8 +137,10 @@ if python3 t/spec.py ./cmark t/commonmark-spec-0.31.2.json.gz "$SCRATCH" \
 		nok "per-section score moved"
 		cat "$SCRATCH/sections.diff"
 	fi
+elif [ "$specrc" -ne 0 ]; then
+	nok "t/spec.py ran" "exited $specrc"
 else
-	nok "t/spec.py ran"
+	nok "t/spec.py ran" "wrote no $SCRATCH/sections.txt"
 fi
 
 pass=$(grep -c '^ok - ' "$OUT")
