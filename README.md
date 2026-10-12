@@ -247,11 +247,29 @@ Ranked by how little we control them.
    `make test` needs no network.  See *Provenance* below.
 2. **The sanitizers.**  `make test-asan` runs all 652 examples plus the depth
    and hostile-input sections under `-fsanitize=address,undefined` with
-   `detect_leaks=1` and `halt_on_error=1`.  Not a correctness oracle, and the
-   only authority on memory safety that is not our own opinion.  Verified
-   live: a deliberate heap overread in `escape_html` is reported by ASan with
-   a line number, and deleting the `free` in `pop_bracket` is reported by
-   LeakSanitizer as 48 bytes.
+   `detect_leaks=1`, `halt_on_error=1` and **`exitcode=86`**.  Not a
+   correctness oracle, and the only authority on memory safety that is not
+   our own opinion.  Verified live: a deliberate heap overread in
+   `escape_html` is reported by ASan with a line number, and deleting the
+   `free` in `pop_bracket` is reported by LeakSanitizer as 48 bytes.
+
+   `exitcode=86` is load-bearing and was missing. A sanitizer abort exits 1
+   by default, and `t/run.sh` treats exit 1 as a **correct refusal** --
+   `rejects ... (exit 1)` for the five depth cases, and `exit 0 or 1` for the
+   urandom, NUL, non-ASCII and ill-formed-UTF-8 cases. Those are exactly the
+   inputs this target exists to run under a sanitizer, stderr is discarded
+   there, so a heap error in any of them was scored as the behaviour being
+   tested and the report was never seen.
+
+   Measured, with a heap overread planted on the depth path:
+
+   ```
+   without exitcode=86:  22 passed, 0 failed
+   with    exitcode=86:  19 passed, 3 failed
+   ```
+
+   `inflate` found this collision the hard way and `derx` and `gitobj` carry
+   the fix; `cmark` was the one that did not.
 3. **CPython's `unicodedata`, `html.entities` and `str.casefold`**, which
    generated the three tables.  Not an oracle for behaviour, but the authority
    for the data lives there rather than in this repo, and the one-liners that
