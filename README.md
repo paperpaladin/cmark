@@ -11,7 +11,7 @@ make test        # the score, pinned per section
 make test-asan   # the same, under -fsanitize=address,undefined
 ```
 
-## The score, which is the only interesting claim
+## The score, and the only interesting claim
 
 Anybody can write a Markdown parser and declare it conformant.  The claim is
 unverifiable without a number from a corpus the author did not write, and for
@@ -67,7 +67,7 @@ The only transformations applied to input are the two the spec mandates
 plus one that is unobservable:
 
 - CRLF and lone CR become LF.  The spec treats all three as line endings; the
-  output always uses LF, which is what the expected HTML in the suite uses.
+  output always uses LF, matching the expected HTML in the suite.
   If your input has CRLF line endings your output will not.
 - U+0000 becomes U+FFFD, because the spec says so ("For security reasons, the
   Unicode character `U+0000` must be replaced with the REPLACEMENT
@@ -137,7 +137,7 @@ A code span's content has its line endings replaced by spaces, and then one
 space is stripped from each end "if the resulting string both begins and ends
 with a space character, but does not consist entirely of space characters".
 I evaluate "consists entirely of space characters" on the content *after* the
-newline substitution, which is what "the resulting string" says.  The
+newline substitution, the thing "the resulting string" says.  The
 reference implementation's `S_normalize_code` evaluates it against a buffer it
 is rewriting in place, so for an input whose content is a bare newline it is
 reading the already-substituted byte, and for one that collapsed a CRLF it is
@@ -176,7 +176,7 @@ definitions.
 
 The cursor is a byte offset *and* a display column, because indentation is
 measured in columns and a tab can be consumed halfway.  That half-consumed tab
-is recorded and written back out as spaces, which is the only reason the Tabs
+is recorded and written back out as spaces, and that is the only reason the Tabs
 section passes.
 
 Pass two walks the finished tree and parses inlines.  A `Subject` holds
@@ -320,4 +320,4 @@ scratch/                          per-run reports, gitignored
 After a run, `scratch/failures.txt` holds every failing example with its
 markdown, the expected HTML and the actual HTML, and `scratch/sections.txt`
 holds the score that gets diffed against the pin.  Both are empty of
-surprises at the moment, which is the point of keeping them.
+surprises at the moment, and keeping them is the point.
