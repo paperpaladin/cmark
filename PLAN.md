@@ -68,7 +68,7 @@ Ranked by how little we control them.
 - A library API.  There is no header, no `cmark_parse`/`cmark_render` pair
   exposed to callers, no AST walker, no source position tracking.  One
   function, `run()`, takes bytes and returns HTML.
-- A safe mode.  Raw HTML in the input is passed through, which is what the
+- A safe mode.  Raw HTML in the input is passed through, as the
   spec's expected output requires and what `cmark --unsafe` does.  A
   `--safe` mode that replaced it with a comment would be a second renderer.
 - Performance beyond "the suite runs in under a second".  The parser is O(n)
@@ -103,7 +103,7 @@ for k, v in sorted(html.entities.html5.items()):
         print(k[:-1], v.encode("utf-8").hex())'
 ```
 
-CPython ships the WHATWG table, which is the one the CommonMark spec points
+CPython ships the WHATWG table, the one the CommonMark spec points
 at.  Keys without a trailing semicolon are dropped: CommonMark requires the
 semicolon, so `&amp` without one is literal text.  The values are written as
 octal escapes so the source file stays ASCII.
@@ -149,7 +149,7 @@ against 15.0 and the difference touches no example in the suite.
     be observed.
 - [x] lists, bullet and ordered
   - why: the hardest container.  Item continuation, padding, `lists_match`,
-    and tight versus loose, which is a property of the whole list decided at
+    and tight versus loose, a property of the whole list decided at
     finalize time.
 - [x] HTML blocks, all seven start and end conditions
   - why: 44 examples, and type 7's "cannot interrupt a paragraph" rule is the
