@@ -141,8 +141,8 @@ newline substitution, the thing "the resulting string" says.  The
 reference implementation's `S_normalize_code` evaluates it against a buffer it
 is rewriting in place, so for an input whose content is a bare newline it is
 reading the already-substituted byte, and for one that collapsed a CRLF it is
-reading the original.  The two agree on every example in the suite and on
-every input I could construct. The difference is recorded here,
+reading the original.  Both agree on every example in the suite and on
+every input I could construct. That difference is recorded here,
 not left as a silent choice.
 
 ### Known ceilings, marked in the source

@@ -93,8 +93,7 @@ has an algorithm hiding in it, and all three are reproducible from CPython's
 standard library, which is where the authority lives, not in this
 repo.
 
-The 2125 HTML5 named character references.  The one-liner that produced
-them:
+The 2125 HTML5 named character references.  Here is the one-liner that produced them:
 
 ```sh
 python3 -c 'import html.entities
