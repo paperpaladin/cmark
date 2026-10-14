@@ -44,20 +44,20 @@ so is the honest list of sections it fails.
 
 Ranked by how little we control them.
 
-1. **The CommonMark specification's own conformance suite.**  `spec.json` from
+1. The CommonMark specification's own conformance suite.  `spec.json` from
    <https://spec.commonmark.org/0.31.2/spec.json>: 652 numbered (markdown,
    html) pairs, every one extracted from the spec text itself, tagged with the
-   section it illustrates.  It *is* the definition of correct -- not a reading
+   section it illustrates.  It *is* the definition of correct: not a reading
    of the spec, not a port of someone's tests, the spec.  Vendored gzipped as
    `t/commonmark-spec-0.31.2.json.gz` (18kB, 140kB uncompressed) with its
    licence in `t/commonmark-spec-LICENSE`, so `make test` needs no network.
    The data is left byte-exact: it deliberately contains smart quotes,
    ellipses, ill-formed UTF-8 and tabs as *test input*.
-2. **The sanitizers.**  `-fsanitize=address,undefined` over the whole suite
+2. The sanitizers.  `-fsanitize=address,undefined` over the whole suite
    plus 400kB of `/dev/urandom`, an embedded NUL, ill-formed UTF-8, and the
    deep-nesting cases.  Not a correctness oracle; the only authority on memory
    safety that is not our own opinion.
-3. **Ourselves, and said so.**  The CLI contract and the depth limit are our
+3. Ourselves, and said so.  The CLI contract and the depth limit are our
    own tests of our own choices.  They are labelled as such in the README.
 
 ## Non-goals
@@ -72,9 +72,9 @@ Ranked by how little we control them.
   spec's expected output requires and what `cmark --unsafe` does.  A
   `--safe` mode that replaced it with a comment would be a second renderer.
 - Performance beyond "the suite runs in under a second".  The parser is O(n)
-  per line in the normal case; two places are knowingly worse and carry
+  per line in the normal case. Two places are knowingly worse and carry
   `shortcut:` comments (backtick scanning, reference lookup).
-- **Claiming that 652/652 means "correct".**  It means every example in the
+- Claiming that 652/652 means "correct".  It means every example in the
   spec is reproduced byte for byte.  The suite is not exhaustive, and the
   README lists what is known to be outside it.
 
@@ -83,17 +83,17 @@ would not allow the shortcut: full Unicode case folding for link labels (the
 spec matches `[SS]` against `[U+1E9E]`, which needs the multi-character
 foldings) and the real Unicode punctuation categories for emphasis flanking
 (0.31 includes the symbol categories, so an ASCII approximation fails in both
-directions).  Both are now generated tables rather than hand-written
+directions).  Both are now generated tables, not hand-written
 approximations.
 
 ## The generated tables
 
 Three tables in `cmark.c` are generated data, not hand-written.  None of them
 has an algorithm hiding in it, and all three are reproducible from CPython's
-standard library, which is where the authority lives rather than in this
+standard library, which is where the authority lives, not in this
 repo.
 
-**The 2125 HTML5 named character references.**  The one-liner that produced
+The 2125 HTML5 named character references.  The one-liner that produced
 them:
 
 ```sh
@@ -108,7 +108,7 @@ at.  Keys without a trailing semicolon are dropped: CommonMark requires the
 semicolon, so `&amp` without one is literal text.  The values are written as
 octal escapes so the source file stays ASCII.
 
-**The 339 Unicode punctuation ranges**, for emphasis flanking:
+The 339 Unicode punctuation ranges, for emphasis flanking:
 
 ```sh
 python3 -c 'import unicodedata
@@ -116,7 +116,7 @@ cats = {"Pc","Pd","Pe","Pf","Pi","Po","Ps","Sc","Sk","Sm","So"}
 print([c for c in range(0x110000) if unicodedata.category(chr(c)) in cats])'
 ```
 
-**The 681 case-folding runs and 104 multi-character foldings**, for link
+The 681 case-folding runs and 104 multi-character foldings, for link
 label matching:
 
 ```sh
@@ -124,7 +124,7 @@ python3 -c 'print([(c, chr(c).casefold()) for c in range(0x110000)
                    if chr(c).casefold() != chr(c)])'
 ```
 
-Both are Unicode 15.1.0 as shipped with this CPython; the spec is written
+Both are Unicode 15.1.0 as shipped with this CPython. The spec is written
 against 15.0 and the difference touches no example in the suite.
 
 ## Commit sequence
@@ -176,7 +176,7 @@ against 15.0 and the difference touches no example in the suite.
 - [x] the last four failures: ATX closing sequences, info string entities,
   setext after reference definitions, full Unicode case folding
   - why: 648 -> 652.  Each one was a single condition in the wrong place, and
-    all four were found by reading the failure dump rather than the spec.
+    all four were found by reading the failure dump, not the spec.
 - [x] the depth limit and `make test-asan`
   - why: the limit is cheap but the test for it is the point, and it can only
     be written once containers and inline brackets both recurse.

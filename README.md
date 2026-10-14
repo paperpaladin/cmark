@@ -42,7 +42,7 @@ SPEC 652/652 examples (CommonMark 0.31.2)
 | 1/1 | Blank lines | | |
 | 25/25 | Block quotes | **652/652** | **TOTAL** |
 
-**No section fails.**  That sentence is worth less than it looks, and the next
+No section fails.  That sentence is worth less than it looks, and the next
 two sections of this README are about why, so read them before believing the
 table.
 
@@ -59,11 +59,11 @@ the score, because the easiest way to get a high number out of a Markdown
 test harness is to normalise both sides until they agree.
 
 The evidence that the harness is real: change `</p>\n` to `</p>\n\n` in the
-renderer -- one byte, in the one place a human would never notice -- and the
+renderer (one byte, in the one place a human would never notice) and the
 score drops from 652/652 to 149/652 and `make test` fails on the pinned diff.
 503 examples catch that byte.
 
-**The only transformations applied to input** are the two the spec mandates
+The only transformations applied to input are the two the spec mandates
 plus one that is unobservable:
 
 - CRLF and lone CR become LF.  The spec treats all three as line endings; the
@@ -88,50 +88,50 @@ example in the specification is reproduced byte for byte".  It does not mean
 
 ### The suite is not exhaustive, and here is what it does not reach
 
-- **No source positions.**  Nothing in this parser records where a node came
+- No source positions.  Nothing in this parser records where a node came
   from.  `spec.json` cannot notice, because it only compares HTML.  If you
   wanted error messages pointing at line and column, this is a rewrite of the
   node structure, not an addition.
-- **No AST, no API, no header.**  `run()` takes bytes and returns HTML.
+- No AST, no API, no header.  `run()` takes bytes and returns HTML.
   There is no `cmark_parse`, no tree walker, no node accessors, no way to
   render anything but HTML.  The suite cannot tell, because the suite only
   runs the binary.
-- **Raw HTML is always passed through.**  This is what the expected output
+- Raw HTML is always passed through.  This is what the expected output
   requires, and it is what `cmark --unsafe` does.  There is no safe mode, so
-  **do not point this at untrusted Markdown and serve the output**:
+  do not point this at untrusted Markdown and serve the output:
   `<script>alert(1)</script>` in the input is `<script>alert(1)</script>` in
   the output.  The reference implementation defaults to replacing raw HTML
   with `<!-- raw HTML omitted -->` and scores worse on its own suite as a
-  result; we score better by being less safe, and the suite will never say so.
-- **No extensions.**  No tables, strikethrough, task lists, footnotes,
+  result. We score better by being less safe, and the suite will never say so.
+- No extensions.  No tables, strikethrough, task lists, footnotes,
   autolink literals, header attributes, or smart punctuation.  Those are
   GFM/cmark-gfm territory and none of them are in CommonMark, so none of them
   are here.
-- **Performance is unmeasured.**  The suite's 652 documents are tiny.  There
+- Performance is unmeasured.  The suite's 652 documents are tiny.  There
   is no benchmark in this repo and no claim about throughput.
 
 ### Deliberate deviations from the specification
 
-- **A nesting-depth limit of 512.**  The spec sets no limit.  A document with
+- A nesting-depth limit of 512.  The spec sets no limit.  A document with
   more than 512 levels of nested containers, or whose inline tree nests more
   than 512 deep (2n asterisks around a word nest n deep, 2n `![` nest n
-  deep), is **refused entirely** with exit status 1 and a message on stderr,
-  rather than rendered.  That is a real deviation and a visible one: a valid
+  deep), is **refused entirely** with exit status 1 and a message on
+  stderr, not rendered.  That is a real deviation and a visible one: a valid
   CommonMark document exists that this program will not render.  The
   alternative is a stack overflow on untrusted input, which is worse.
-- **Nine digits maximum in an ordered list marker.**  The spec says "up to 9
+- Nine digits maximum in an ordered list marker.  The spec says "up to 9
   digits", so this one is conformant, but it means `1000000000. x` is a
   paragraph, not a list.
-- **32 levels of nested parentheses in a bare link destination.**  The spec
+- 32 levels of nested parentheses in a bare link destination.  The spec
   says only "balanced".  This matches the reference implementation's limit and
   nothing in the suite goes past 3.
-- **Unicode 15.1.0 tables.**  The spec is written against 15.0.  The
+- Unicode 15.1.0 tables.  The spec is written against 15.0.  The
   punctuation categories and case foldings come from whatever CPython on this
   machine ships, which was 15.1.0.  No example in the suite is affected, and
   the difference would show up only in emphasis flanking around characters
   added or recategorised between the two versions.
 
-### One place where I read the spec text rather than copying cmark
+### One place where I read the spec text instead of copying cmark
 
 A code span's content has its line endings replaced by spaces, and then one
 space is stripped from each end "if the resulting string both begins and ends
@@ -142,13 +142,13 @@ reference implementation's `S_normalize_code` evaluates it against a buffer it
 is rewriting in place, so for an input whose content is a bare newline it is
 reading the already-substituted byte, and for one that collapsed a CRLF it is
 reading the original.  The two agree on every example in the suite and on
-every input I could construct; the difference is recorded here rather than
-left as a silent choice.
+every input I could construct. The difference is recorded here,
+not left as a silent choice.
 
 ### Known ceilings, marked in the source
 
 `grep -n 'shortcut:' cmark.c` lists these.  Each is a deliberate
-simplification with a named upgrade path, not an oversight.
+simplification with a named upgrade path.
 
 | where | ceiling | upgrade |
 | --- | --- | --- |
@@ -164,7 +164,7 @@ Two passes, which is forced by one rule: **a link reference definition may
 appear after the text that uses it**, so references cannot be resolved while
 blocks are still being read.
 
-**Pass one, line by line, builds the block tree.**  For each line:
+Pass one, line by line, builds the block tree.  For each line:
 `check_open_blocks` walks the chain of currently open containers from the
 document down and asks each whether this line continues it, consuming its
 prefix as it goes; `open_new_blocks` then looks for new block starts at the
@@ -179,13 +179,13 @@ measured in columns and a tab can be consumed halfway.  That half-consumed tab
 is recorded and written back out as spaces, which is the only reason the Tabs
 section passes.
 
-**Pass two walks the finished tree and parses inlines.**  A `Subject` holds
+Pass two walks the finished tree and parses inlines.  A `Subject` holds
 one block's accumulated text plus two stacks: brackets, for links and images
 whose extent is only known when the `]` arrives, and delimiters, for emphasis.
 `process_emphasis` is the spec's own algorithm, left- and right-flanking plus
 the rule of 3 plus the `openers_bottom` memo that keeps it linear.
 
-**The renderer** is a recursive walk with one trick, `cr()`, which emits a
+The renderer is a recursive walk with one trick, `cr()`, which emits a
 newline only if the output does not already end with one.  That is how the
 expected HTML's exact newline placement falls out without special cases.
 
@@ -193,18 +193,18 @@ expected HTML's exact newline placement falls out without special cases.
 
 Four things in CommonMark resist being written from a reading of the spec.
 All four are passing, and all four took a transcription of the published
-algorithm rather than an interpretation of the prose:
+algorithm, not an interpretation of the prose:
 
-**Emphasis** is the worst, 132 examples deep, and the reason is that the
+Emphasis is the worst, 132 examples deep, and the reason is that the
 answer is not derivable from what looks right.  A delimiter run's flanking is
 decided by the Unicode category of the characters on either side; `_` gets
-extra restrictions so intraword underscores do nothing; and the "rule of 3"
-exists purely so that `*foo**bar**baz*` is one `<em>` containing a `<strong>`
-rather than three spans.  Nesting then falls out of leaving leftover
-characters on the stack: `***foo***` consumes two delimiters from each end
+extra restrictions so intraword underscores do nothing, and the "rule of 3"
+exists purely so that `*foobarbaz*` is one `<em>` containing a `<strong>`,
+not three spans.  Nesting then falls out of leaving leftover
+characters on the stack: `*foo*` consumes two delimiters from each end
 into a `<strong>`, and the survivors pair into an `<em>` around it.
 
-**List item continuation and lazy continuation** are two different rules that
+List item continuation and lazy continuation are two different rules that
 look like one.  An item continues while the line is indented at least
 `marker_offset + padding` columns, where padding is *not* the marker length: a
 marker followed by five or more spaces, or by nothing, takes exactly one space
@@ -215,46 +215,46 @@ container above it matched, the line joins that paragraph even though its
 prefix is missing.  Those two clauses between them decide whether `> a` / `b`
 is one paragraph or two blocks.
 
-**Link reference definitions** force the two-pass shape, and they have one
+Link reference definitions force the two-pass shape, and they have one
 edge the prose buries: a paragraph consisting *only* of definitions has
 nothing left to underline, so `[foo]: /url` followed by `===` is a paragraph
-containing `===`, not a heading -- while `[foo]: /url` / `bar` / `===` is an
+containing `===`, not a heading, while `[foo]: /url` / `bar` / `===` is an
 h1 containing `bar`.  Getting that right meant moving reference stripping out
 of `finalize` into a helper the setext branch calls first.
 
-**HTML blocks** are seven start conditions and five end conditions that do not
+HTML blocks are seven start conditions and five end conditions that do not
 generalise, so they are transcribed one by one.  The traps: types 1 to 5
 swallow blank lines while 6 and 7 are terminated by one; type 7 cannot
 interrupt a paragraph (otherwise a wrapped paragraph whose second line starts
-with a tag turns into raw HTML); and the 62-name list for type 6 contains both
+with a tag turns into raw HTML), and the 62-name list for type 6 contains both
 `p` and `param`, so a name match that fails its terminator check has to keep
-scanning the list rather than fail.
+scanning the list instead of failing.
 
-**Tight versus loose lists** is a property of the whole list, not of any line,
+Tight versus loose lists is a property of the whole list, not of any line,
 decided at `finalize`: loose if any item is followed by a blank line or any
 item's own children are separated by one.  The renderer then drops `<p>` tags
-inside a tight list -- but only for a paragraph whose *grandparent* is the
+inside a tight list, but only for a paragraph whose *grandparent* is the
 list, so a paragraph inside a block quote inside a tight item keeps its tags.
 
 ## Oracles
 
 Ranked by how little we control them.
 
-1. **The CommonMark specification's own conformance suite**, from
+1. The CommonMark specification's own conformance suite, from
    <https://spec.commonmark.org/0.31.2/spec.json>.  652 (markdown, html)
    pairs.  Vendored gzipped as `t/commonmark-spec-0.31.2.json.gz` (18kB, 140kB
    uncompressed) with its licence in `t/commonmark-spec-LICENSE`, so
    `make test` needs no network.  See *Provenance* below.
-2. **The sanitizers.**  `make test-asan` runs all 652 examples plus the depth
+2. The sanitizers.  `make test-asan` runs all 652 examples plus the depth
    and hostile-input sections under `-fsanitize=address,undefined` with
-   `detect_leaks=1`, `halt_on_error=1` and **`exitcode=86`**.  Not a
+   `detect_leaks=1`, `halt_on_error=1` and `exitcode=86`.  Not a
    correctness oracle, and the only authority on memory safety that is not
    our own opinion.  Verified live: a deliberate heap overread in
    `escape_html` is reported by ASan with a line number, and deleting the
    `free` in `pop_bracket` is reported by LeakSanitizer as 48 bytes.
 
    `exitcode=86` is load-bearing and was missing. A sanitizer abort exits 1
-   by default, and `t/run.sh` treats exit 1 as a **correct refusal** --
+   by default, and `t/run.sh` treats exit 1 as a **correct refusal**:
    `rejects ... (exit 1)` for the five depth cases, and `exit 0 or 1` for the
    urandom, NUL, non-ASCII and ill-formed-UTF-8 cases. Those are exactly the
    inputs this target exists to run under a sanitizer, stderr is discarded
@@ -270,11 +270,11 @@ Ranked by how little we control them.
 
    `inflate` found this collision the hard way and `derx` and `gitobj` carry
    the fix; `cmark` was the one that did not.
-3. **CPython's `unicodedata`, `html.entities` and `str.casefold`**, which
+3. CPython's `unicodedata`, `html.entities` and `str.casefold`, which
    generated the three tables.  Not an oracle for behaviour, but the authority
-   for the data lives there rather than in this repo, and the one-liners that
+   for the data lives there, not in this repo, and the one-liners that
    regenerate it are in `PLAN.md`.
-4. **Ourselves, and labelled as such.**  The CLI contract, the depth limit and
+4. Ourselves, and labelled as such.  The CLI contract, the depth limit and
    the hostile-input smoke tests are our own tests of our own choices.  They
    are the four non-spec sections of `t/run.sh` output.
 
@@ -286,17 +286,17 @@ otherwise byte-exact.  The specification is Copyright (C) 2014-16 John
 MacFarlane and released under **CC-BY-SA 4.0**; the full notice shipped with
 the spec repository is in `t/commonmark-spec-LICENSE`.
 
-The data is deliberately **not** ASCII-swept.  It contains smart quotes,
+The data is deliberately not ASCII-swept.  It contains smart quotes,
 ellipsis characters, ill-formed UTF-8 byte sequences and significant tabs
-*as test input* -- those characters are the test.  An ASCII sweep over it
+*as test input*, those characters are the test.  An ASCII sweep over it
 would delete the tests it was trying to tidy.
 
 `cmark.c` embeds three tables generated from CPython's standard library (the
 WHATWG named character references, the Unicode punctuation categories, and the
 Unicode case foldings).  The generating one-liners are recorded in `PLAN.md`
-so the tables are reproducible rather than mysterious.
+so the tables are reproducible, not mysterious.
 
-This program is free software under the **GPL-3.0-or-later**; see `LICENSE`.
+This program is free software under the GPL-3.0-or-later; see `LICENSE`.
 It shares no code with the reference `cmark` implementation, but it follows
 that implementation's parsing *algorithm* closely, because the algorithm is
 published in the specification's appendix and in cmark's source, and inventing
