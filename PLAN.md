@@ -88,7 +88,7 @@ approximations.
 
 ## The generated tables
 
-Three tables in `cmark.c` are generated data, not hand-written.  None of them
+Three tables in `cmark.c` are generated data, never hand-written.  None of them
 has an algorithm hiding in it, and all three are reproducible from CPython's
 standard library, which is where the authority lives, not in this
 repo.
