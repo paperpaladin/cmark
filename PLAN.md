@@ -32,7 +32,7 @@ passed/total for all 26 sections plus the total, and `make test` diffs it, so
 a change that fixes four examples and breaks two is a test failure, not a
 quietly flat number.
 
-The second invariant is memory safety on untrusted input: a nesting-depth
+The second invariant is memory safety on untrusted input. A nesting-depth
 limit that returns an error instead of overflowing the stack, proved under
 `-fsanitize=address,undefined`.
 

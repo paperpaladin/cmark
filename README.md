@@ -116,7 +116,7 @@ example in the specification is reproduced byte for byte".  It does not mean
   more than 512 levels of nested containers, or whose inline tree nests more
   than 512 deep (2n asterisks around a word nest n deep, 2n `![` nest n
   deep), is **refused entirely** with exit status 1 and a message on
-  stderr, not rendered.  That is a real deviation and a visible one: a valid
+  stderr, not rendered.  That is a real deviation and a visible one. A valid
   CommonMark document exists that this program will not render.  The
   alternative is a stack overflow on untrusted input, which is worse.
 - Nine digits maximum in an ordered list marker.  The spec says "up to 9
@@ -180,7 +180,7 @@ is recorded and written back out as spaces, and that is the only reason the Tabs
 section passes.
 
 Pass two walks the finished tree and parses inlines.  A `Subject` holds
-one block's accumulated text plus two stacks: brackets, for links and images
+one block's accumulated text plus two stacks. Brackets, for links and images
 whose extent is only known when the `]` arrives, and delimiters, for emphasis.
 `process_emphasis` is the spec's own algorithm, left- and right-flanking plus
 the rule of 3 plus the `openers_bottom` memo that keeps it linear.
@@ -206,7 +206,7 @@ into a `<strong>`, and the survivors pair into an `<em>` around it.
 
 List item continuation and lazy continuation are two different rules that
 look like one.  An item continues while the line is indented at least
-`marker_offset + padding` columns, where padding is *not* the marker length: a
+`marker_offset + padding` columns, where padding is *not* the marker length. A
 marker followed by five or more spaces, or by nothing, takes exactly one space
 of padding and the rest is content, which is how `-     foo` becomes an item
 containing an indented code block.  Lazy continuation is separate and lives in
@@ -223,7 +223,7 @@ h1 containing `bar`.  Getting that right meant moving reference stripping out
 of `finalize` into a helper the setext branch calls first.
 
 HTML blocks are seven start conditions and five end conditions that do not
-generalise, so they are transcribed one by one.  The traps: types 1 to 5
+generalise, so they are transcribed one by one.  The traps. Types 1 to 5
 swallow blank lines while 6 and 7 are terminated by one; type 7 cannot
 interrupt a paragraph (otherwise a wrapped paragraph whose second line starts
 with a tag turns into raw HTML), and the 62-name list for type 6 contains both
@@ -249,7 +249,7 @@ Ranked by how little we control them.
    and hostile-input sections under `-fsanitize=address,undefined` with
    `detect_leaks=1`, `halt_on_error=1` and `exitcode=86`.  Not a
    correctness oracle, and the only authority on memory safety that is not
-   our own opinion.  Verified live: a deliberate heap overread in
+   our own opinion.  Verified live. A deliberate heap overread in
    `escape_html` is reported by ASan with a line number, and deleting the
    `free` in `pop_bracket` is reported by LeakSanitizer as 48 bytes.
 
