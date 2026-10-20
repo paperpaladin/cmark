@@ -181,3 +181,16 @@ against 15.0 and the difference touches no example in the suite.
     be written once containers and inline brackets both recurse.
 - [x] README with the per-section table and the shortfalls named
   - why: last, so the numbers in it are the numbers the suite prints.
+- [x] `bfit()` and `make overread`: stop the doubling buffers from switching
+  the sanitizer off
+  - why: `bgrow()` doubles and never shrinks, so `run()` was handed up to
+    twice the document's bytes and ASan could not see a read past the end of
+    the input.  Proved first, then fixed: a planted read of
+    `src[srclen + 1]` under `-fsanitize=address,undefined` produced exit 0
+    and an empty stderr, and after one `realloc` down to `n + 1` the same
+    probe produced `heap-buffer-overflow ... 0 bytes after 17-byte region`.
+    `make overread` requires the report and fails without it, verified by
+    deleting `bfit(&in)`.  The same shape was blind in the inline parser's
+    subject and in every node `escape_html()` renders, which makes an
+    existing README claim about `escape_html` false as written; both are
+    fitted now and the README records that it was wrong.

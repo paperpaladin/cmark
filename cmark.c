@@ -80,6 +80,25 @@ static void btrim(Buf *b) {
 	if (b->p) b->p[b->n] = 0;
 }
 
+/* Shrink to exactly the bytes held, plus the NUL byte bput() maintains at
+ * p[n].  bgrow() doubles and never shrinks, so a buffer that has finished
+ * growing is up to twice the size of its contents, and every byte of that
+ * slack is a live allocation ASan is happy to let anybody read.  A read one
+ * past the end of a 16-byte document lands 15 bytes inside a 32-byte block
+ * and the sanitizer says nothing, which means every clean run over this
+ * parser was clean over a larger region than the document.  Call this
+ * wherever a buffer stops being written and starts being parsed; `make
+ * overread` is the gate that proves it is still called. */
+static void bfit(Buf *b) {
+	char *q;
+	if (!b->p || b->cap == b->n + 1) return;
+	q = realloc(b->p, b->n + 1);
+	if (!q) oom();
+	b->p = q;
+	b->cap = b->n + 1;
+	b->p[b->n] = 0;
+}
+
 static void bfree(Buf *b) {
 	free(b->p);
 	b->p = NULL;
@@ -2338,6 +2357,7 @@ static size_t spnl(const char *s, size_t n, size_t i) {
 static void unescape_buf(Buf *b) {
 	Buf t = {0};
 	size_t i = 0;
+	bfit(b);	/* decode_entity() scans ahead in it; see bfit() */
 	while (i < b->n) {
 		if (b->p[i] == '&') {
 			size_t m = decode_entity(&t, b->p, b->n, i);
@@ -2370,6 +2390,7 @@ static void clean_autolink(Buf *out, const char *s, size_t n, int email) {
 	Buf t = {0};
 	bput(&t, s, n);
 	btrim(&t);
+	bfit(&t);	/* decode_entity() scans ahead in it; see bfit() */
 	if (email) bputs(out, "mailto:");
 	decode_entities_into(out, t.p, t.n);
 	bfree(&t);
@@ -2528,6 +2549,10 @@ static int is_special(int c) {
 static Node *make_literal(Type t, const char *s, size_t n) {
 	Node *node = node_new(t);
 	bput(&node->content, s, n);
+	/* A literal never grows again; the renderer hands it to escape_html()
+	 * with a separate length.  See bfit(): without this a two-byte "![" sat
+	 * in a 32-byte allocation and a read past its end was invisible. */
+	bfit(&node->content);
 	return node;
 }
 
@@ -2660,6 +2685,7 @@ static Node *handle_pointy_brace(Subject *s) {
 		n = node_new(N_LINK);
 		clean_autolink(&n->url, s->s + s->pos + 1, m - 2, email);
 		decode_entities_into(&txt->content, s->s + s->pos + 1, m - 2);
+		bfit(&txt->content);	/* see bfit() */
 		node_append(n, txt);
 		s->pos += m;
 		return n;
@@ -2987,6 +3013,10 @@ static int parse_inline(Subject *s, Node *parent) {
 static void parse_inlines(Node *parent, RefMap *refs) {
 	Subject s;
 	memset(&s, 0, sizeof s);
+	/* The inline parser is the hungriest reader in the program -- backtick
+	 * runs, delimiter flanking and bracket matching all scan ahead -- so
+	 * this is the buffer most worth making exactly as big as its data. */
+	bfit(&parent->content);
 	s.s = parent->content.p;
 	s.n = parent->content.n;
 	s.refs = refs;
@@ -3118,6 +3148,11 @@ static Node *finalize(Parser *p, Node *b) {
 	default:
 		break;
 	}
+	/* The last write to this block's text has happened: it is closed, and
+	 * only an open block gets lines appended.  From here it is read with a
+	 * separate length by the inline parser and by escape_html(), so size it
+	 * to its data.  See bfit(). */
+	bfit(&b->content);
 	return parent;
 }
 
@@ -3623,8 +3658,24 @@ static int run(const char *src, size_t srclen, Buf *out) {
 	size_t i, start;
 	int rc = 0;
 
+#ifdef CMARK_PLANT_OVERREAD
+	/* A deliberate one-past-the-end read of the input, for `make overread`.
+	 * bput() keeps a NUL at p[n], so src[srclen] is still in bounds and
+	 * src[srclen + 1] is the first byte that is not.  ASan can only see it
+	 * if main() handed us a buffer of exactly the right size: a doubling
+	 * buffer leaves up to srclen bytes of live allocation past the end for
+	 * this read to land harmlessly inside, which is the whole point of the
+	 * target.  volatile so -O1 cannot drop the load. */
+	{
+		static volatile char sink;
+		sink = src[srclen + 1];
+		(void)sink;
+	}
+#endif
+
 	memset(&p, 0, sizeof p);
 	normalize(&text, src, srclen);
+	bfit(&text);	/* nothing appends to it after this; the parser only reads */
 	p.doc = node_new(N_DOC);
 	p.dead = node_new(N_DOC);
 	p.cur = p.doc;
@@ -3671,6 +3722,7 @@ int main(int argc, char **argv) {
 		}
 	}
 	while ((got = fread(chunk, 1, sizeof chunk, f)) > 0) bput(&in, chunk, got);
+	bfit(&in);	/* see bfit(): a doubled read buffer blinds the sanitizer */
 	if (ferror(f)) {
 		fputs("cmark: read error\n", stderr);
 		return 2;

@@ -8,7 +8,8 @@ Unicode and entity tables, so about 2550 lines of parser.
 make
 echo '**hi** `there`' | ./cmark
 make test        # the score, pinned per section
-make test-asan   # the same, under -fsanitize=address,undefined
+make test-asan   # the same, under -fsanitize=address,undefined, plus `overread`
+make overread    # requires ASan to see a planted read past the input
 ```
 
 ## The score, and the only interesting claim
@@ -145,6 +146,108 @@ reading the original.  Both agree on every example in the suite and on
 every input I could construct. That difference is recorded here,
 not left as a silent choice.
 
+### The sanitizer was switched off by a doubling buffer
+
+This is the most useful thing in this README, because it was true for every
+clean `make test-asan` this repository ever printed, and no sanitizer told
+anybody.
+
+`bgrow()` doubles and never shrinks.  `main()` read the document with
+
+```c
+while ((got = fread(chunk, 1, sizeof chunk, f)) > 0) bput(&in, chunk, got);
+rc = run(in.p ? in.p : "", in.n, &out);
+```
+
+so the parser was handed an allocation of up to twice the length of the real
+input, and ASan cannot report a read past `in.n` when the bytes past `in.n`
+are inside a live allocation.  A 16-byte document sat in a 32-byte block; a
+read one past its end landed 15 bytes inside it and was legal.
+
+Measured, not reasoned about.  `-DCMARK_PLANT_OVERREAD` compiles a read of
+`src[srclen + 1]` into `run()` (`src[srclen]` is the NUL `bput()` maintains,
+so `+ 1` is the first byte that is out of bounds), built with
+`-fsanitize=address,undefined`, fed `hello **world**`:
+
+```
+before: exit 0
+        stdout: <p>hello <strong>world</strong></p>
+        stderr: 0 bytes
+
+after:  ==800120==ERROR: AddressSanitizer: heap-buffer-overflow on address
+        0x503000000081 ...
+        READ of size 1 at 0x503000000081 thread T0
+            #0 ... in run cmark.c:3671
+            #1 ... in main cmark.c:3732
+        0x503000000081 is located 0 bytes after 17-byte region
+        SUMMARY: AddressSanitizer: heap-buffer-overflow cmark.c:3671 in run
+        exit 86
+```
+
+The fix is `bfit()`, one `realloc` down to `n + 1` bytes, keeping the NUL
+terminator at `p[n]` that `bput()`, `btrim()` and `finalize()` all write.  It
+is called at the eight places where a `Buf` stops being written and starts
+being read with a separate length: the input in `main()`, the
+newline-normalised copy in `run()`, every block's text in `finalize()`, the
+inline parser's subject in `parse_inlines()`, every inline literal in
+`make_literal()`, an autolink's decoded text, and the two buffers
+`decode_entity()` scans ahead in (`unescape_buf()` and `clean_autolink()`).
+`grep -n 'bfit(' cmark.c` is the list.
+
+`make overread` is the interlock, and it runs as part of `make test-asan`.  It
+compiles the probe, runs it, and **fails unless ASan reports it**, so putting
+the rounded-up buffer back turns the suite red instead of quietly turning the
+sanitizer off.  Verified by deleting `bfit(&in)` and running the target:
+
+```
+not ok - overread: the planted read of src[srclen + 1] was NOT reported (exit 0)
+  the input buffer is larger than the input, so ASan cannot see past it;
+  restore bfit(&in) after the read loop in main() -- see bfit() in cmark.c
+  stdout was: <p>hello <strong>world</strong></p>
+  stderr was 0 bytes
+make: *** [Makefile:66: overread] Error 1
+```
+
+It did not stop at the input buffer, because the lesson from the nine other
+repositories in this collection that had this shape is that the fix does not
+travel: look for the shape, not for the function that was named last time.
+Two more readers of the same shape were blind, and both are now measured:
+
+- The inline parser's subject.  `parse_inlines()` reads `parent->content`,
+  the hungriest reader in the program (backtick runs, delimiter flanking and
+  bracket matching all scan ahead).  A planted read of
+  `parent->content.p[parent->content.n + 1]` produced **nothing** before and
+  a `heap-buffer-overflow` in `parse_inlines` after.
+- Every node the renderer escapes.  The *Oracles* section has claimed
+  since the depth-limit commit that "a deliberate heap overread in
+  `escape_html` is reported by ASan with a line number".  That claim was
+  false as written.  A read of `s[n + 1]` planted at the top of
+  `escape_html()` was reported for **none** of `hello **world**`,
+  `    code here`, `<http://x.example/>` or `` `code span` ``, because every
+  one of those renders out of a doubled `content` buffer.  With `bfit()` in
+  `finalize()` and `make_literal()` all four are reported.  The claim is true
+  now; it is recorded here that it was not when it was written.
+
+### What is still bigger than its data
+
+Two of this shape are left, and neither is fixed by a `realloc`:
+
+- `parse_inlines()` trims trailing whitespace by decreasing its own `s.n`
+  without touching the buffer, so for a paragraph ending in spaces the
+  subject's logical length is shorter than the allocation no matter how
+  exactly the allocation is sized.  A read past `s.n` but within
+  `content.n` is invisible and always will be.
+- The output buffer in `main()` is never fitted, because nothing reads it
+  with a separate length except the `fwrite` that consumes exactly `out.n`
+  bytes.
+
+The durable answer to both, and the thing to reach for if this ever needs to
+be airtight rather than merely much better, is to poison the slack:
+`__asan_poison_memory_region(b->p + b->n + 1, b->cap - b->n - 1)` in
+`bgrow()`, with an unpoison at every site that shortens `n` and writes a new
+NUL.  That is several sites of discipline and a missed one is a false positive,
+so it is written down here rather than built.
+
 ### Known ceilings, marked in the source
 
 `grep -n 'shortcut:' cmark.c` lists these.  Each is a deliberate
@@ -250,8 +353,10 @@ Ranked by how little we control them.
    `detect_leaks=1`, `halt_on_error=1` and `exitcode=86`.  Not a
    correctness oracle, and the only authority on memory safety that is not
    our own opinion.  Verified live. A deliberate heap overread in
-   `escape_html` is reported by ASan with a line number, and deleting the
-   `free` in `pop_bracket` is reported by LeakSanitizer as 48 bytes.
+   `escape_html` is reported by ASan with a line number -- which was **not**
+   true when this sentence was first written, see *The sanitizer was switched
+   off by a doubling buffer* below -- and deleting the `free` in
+   `pop_bracket` is reported by LeakSanitizer as 48 bytes.
 
    `exitcode=86` is load-bearing and was missing. A sanitizer abort exits 1
    by default, and `t/run.sh` treats exit 1 as a **correct refusal**:
@@ -270,6 +375,10 @@ Ranked by how little we control them.
 
    `inflate` found this collision the hard way and `derx` and `gitobj` carry
    the fix; `cmark` was the one that did not.
+
+   And `exitcode=86` was only half of it: for most of this repository's life
+   the sanitizer was looking at a bigger region than the document.  See
+   *The sanitizer was switched off by a doubling buffer* below.
 3. CPython's `unicodedata`, `html.entities` and `str.casefold`, which
    generated the three tables.  Not an oracle for behaviour, but the authority
    for the data lives there, not in this repo, and the one-liners that
@@ -307,7 +416,7 @@ this one right.
 
 ```
 cmark.c                           the parser, the renderer, and three tables
-Makefile                          all / test / test-asan / clean
+Makefile                          all / test / test-asan / overread / clean
 t/run.sh                          the harness: CLI, depth, hostile input, spec
 t/spec.py                         the spec runner; writes the per-section score
 t/sections.expected               the pin, diffed every run
